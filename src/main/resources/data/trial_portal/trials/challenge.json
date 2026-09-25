@@ -1,0 +1,53 @@
+{
+  "comment": "星罗·闯关：5 波，每波打完停下等玩家决定；死亡清空累计奖励",
+  "mode": "challenge",
+  "display_name": "星罗·闯关",
+  "spawn_radius": 7.0,
+  "spawn_height": 3.0,
+  "waves": [
+    {
+      "title": "%s · 第 1 波",
+      "mobs": [
+        { "entity": "minecraft:zombie", "count": 4 },
+        { "entity": "minecraft:skeleton", "count": 2 }
+      ],
+      "rewards": [ { "item": "minecraft:iron_ingot", "count": 2 } ],
+      "intermission_ticks": 60
+    },
+    {
+      "title": "第 2 波",
+      "mobs": [
+        { "entity": "minecraft:zombie", "count": 5, "nbt": "{ArmorItems:[{},{},{},{id:\"minecraft:iron_helmet\",Count:1b}]}" },
+        { "entity": "minecraft:skeleton", "count": 3 }
+      ],
+      "rewards": [ { "item": "minecraft:iron_ingot", "count": 3 } ],
+      "intermission_ticks": 60
+    },
+    {
+      "title": "第 3 波",
+      "mobs": [
+        { "entity": "minecraft:creeper", "count": 3 },
+        { "entity": "minecraft:spider", "count": 4 }
+      ],
+      "rewards": [ { "item": "minecraft:gold_ingot", "count": 3 } ],
+      "intermission_ticks": 80
+    },
+    {
+      "title": "第 4 波",
+      "mobs": [
+        { "entity": "minecraft:pillager", "count": 5 },
+        { "entity": "minecraft:witch", "count": 2 }
+      ],
+      "rewards": [ { "item": "minecraft:diamond", "count": 2 } ],
+      "intermission_ticks": 100
+    },
+    {
+      "title": "终波 · BOSS",
+      "mobs": [
+        { "entity": "minecraft:vindicator", "count": 1, "boss": true },
+        { "entity": "minecraft:zombie", "count": 4 }
+      ],
+      "rewards": [ { "item": "minecraft:diamond", "count": 4 }, { "item": "minecraft:enchanted_golden_apple", "count": 1 } ]
+    }
+  ]
+}

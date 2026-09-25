@@ -1,0 +1,26 @@
+{
+  "comment": "星罗·试炼：1 波前置小怪 + 带 3 条克制词条的 BOSS，掉落质变材料",
+  "mode": "trial",
+  "display_name": "星罗·试炼",
+  "spawn_radius": 8.0,
+  "waves": [
+    {
+      "title": "前置 · 试探",
+      "mobs": [
+        { "entity": "minecraft:skeleton", "count": 3 },
+        { "entity": "minecraft:zombie", "count": 3 }
+      ],
+      "rewards": [],
+      "intermission_ticks": 80
+    }
+  ],
+  "boss": {
+    "entity": "minecraft:vindicator",
+    "name": "星罗试炼·%s",
+    "affix_count": 3,
+    "rewards": [
+      { "item": "minecraft:nether_star", "count": 1 },
+      { "item": "minecraft:diamond_block", "count": 2 }
+    ]
+  }
+}

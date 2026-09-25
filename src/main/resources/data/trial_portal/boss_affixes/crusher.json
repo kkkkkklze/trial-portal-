@@ -1,0 +1,24 @@
+{
+  "display_name": "碾碎",
+  "weight": 1.0,
+  "counters": {
+    "min_max_health": 30.0,
+    "min_armor_toughness": 4.0
+  },
+  "attributes": {
+    "minecraft:generic.attack_damage": {
+      "op": "multiply_base",
+      "value": 0.8
+    },
+    "minecraft:generic.max_health": {
+      "op": "multiply_base",
+      "value": 0.8
+    },
+    "minecraft:generic.knockback_resistance": {
+      "op": "set",
+      "value": 1.0
+    }
+  },
+  "name_suffix": "·碾碎",
+  "name_color": "E6761E"
+}

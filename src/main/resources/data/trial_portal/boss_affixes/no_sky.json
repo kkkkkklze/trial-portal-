@@ -1,0 +1,26 @@
+{
+  "display_name": "禁空",
+  "weight": 1.1,
+  "counters": {
+    "elytra": true
+  },
+  "attributes": {
+    "minecraft:generic.follow_range": {
+      "op": "set",
+      "value": 64.0
+    },
+    "minecraft:generic.movement_speed": {
+      "op": "multiply_base",
+      "value": 0.4
+    }
+  },
+  "effects": [
+    {
+      "effect": "minecraft:slow_falling",
+      "amplifier": 0,
+      "duration": -1
+    }
+  ],
+  "name_suffix": "·禁空",
+  "name_color": "4169E1"
+}

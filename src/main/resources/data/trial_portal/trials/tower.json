@@ -1,0 +1,71 @@
+{
+  "comment": "星罗·爬塔：无尽，按层缩放；每 10 层一个带词条的 BOSS，每 5 层发奖",
+  "mode": "tower",
+  "display_name": "星罗·爬塔",
+  "spawn_radius": 8.0,
+  "scaling": {
+    "health_multiplier_per_floor": 0.18,
+    "damage_multiplier_per_floor": 0.06,
+    "count_per_floor": 0.2,
+    "max_count_per_entry": 12,
+    "intermission_ticks": 40,
+    "reward_every_floors": 5,
+    "boss_every_floors": 10,
+    "boss_affix_pool": [
+      "trial_portal:anti_armor",
+      "trial_portal:crusher",
+      "trial_portal:hunter",
+      "trial_portal:bulwark"
+    ],
+    "rewards": [
+      { "item": "minecraft:iron_ingot", "count": 1 },
+      { "item": "minecraft:bread", "count": 2 }
+    ],
+    "tiers": [
+      {
+        "from": 1,
+        "to": 10,
+        "count": 4,
+        "boss": false,
+        "mobs": [ "minecraft:zombie", "minecraft:skeleton" ]
+      },
+      {
+        "from": 11,
+        "to": 30,
+        "count": 5,
+        "boss": true,
+        "mobs": [ "minecraft:cave_spider", "minecraft:zombie", "minecraft:skeleton", "minecraft:creeper" ]
+      },
+      {
+        "from": 31,
+        "to": 60,
+        "count": 6,
+        "boss": true,
+        "mobs": [ "minecraft:ravager", "minecraft:pillager", "minecraft:vindicator", "minecraft:witch" ],
+        "boss_affix_pool": [
+          "trial_portal:crusher",
+          "trial_portal:thorns",
+          "trial_portal:no_sky",
+          "trial_portal:bulwark"
+        ]
+      },
+      {
+        "from": 61,
+        "to": 9999,
+        "count": 8,
+        "boss": true,
+        "mobs": [ "minecraft:evoker", "minecraft:vindicator", "minecraft:witch", "minecraft:pillager" ],
+        "boss_affix_pool": [
+          "trial_portal:anti_armor",
+          "trial_portal:crusher",
+          "trial_portal:hunter",
+          "trial_portal:thorns",
+          "trial_portal:fireproof",
+          "trial_portal:no_sky",
+          "trial_portal:runner",
+          "trial_portal:bulwark"
+        ]
+      }
+    ]
+  }
+}

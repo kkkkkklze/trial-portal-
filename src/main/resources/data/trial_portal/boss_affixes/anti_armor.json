@@ -1,0 +1,11 @@
+{
+  "display_name": "破甲",
+  "weight": 1.2,
+  "counters": { "min_armor": 12.0 },
+  "melee_damage_type": "minecraft:magic",
+  "attributes": {
+    "minecraft:generic.max_health": { "op": "multiply_base", "value": 0.5 }
+  },
+  "name_suffix": "·破甲",
+  "name_color": "FF5555"
+}

@@ -1,0 +1,19 @@
+{
+  "display_name": "坚壁",
+  "weight": 1.5,
+  "counters": {
+    "always": true
+  },
+  "attributes": {
+    "minecraft:generic.max_health": {
+      "op": "multiply_base",
+      "value": 1.0
+    },
+    "minecraft:generic.armor": {
+      "op": "add",
+      "value": 6.0
+    }
+  },
+  "name_suffix": "·坚壁",
+  "name_color": "DAA520"
+}

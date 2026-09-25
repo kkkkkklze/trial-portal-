@@ -1,0 +1,22 @@
+{
+  "display_name": "耐火",
+  "weight": 0.9,
+  "counters": {
+    "enchantments": [
+      "minecraft:flame",
+      "minecraft:fire_aspect"
+    ]
+  },
+  "immune_to": [
+    "fire"
+  ],
+  "effects": [
+    {
+      "effect": "minecraft:fire_resistance",
+      "amplifier": 0,
+      "duration": -1
+    }
+  ],
+  "name_suffix": "·耐火",
+  "name_color": "FF8C00"
+}

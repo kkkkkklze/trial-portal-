@@ -1,0 +1,19 @@
+{
+  "display_name": "疾走",
+  "weight": 0.8,
+  "counters": {
+    "min_movement_speed": 0.12
+  },
+  "attributes": {
+    "minecraft:generic.movement_speed": {
+      "op": "set",
+      "value": 0.42
+    },
+    "minecraft:generic.knockback_resistance": {
+      "op": "add",
+      "value": 0.6
+    }
+  },
+  "name_suffix": "·疾走",
+  "name_color": "00CED1"
+}

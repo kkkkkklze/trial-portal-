@@ -1,0 +1,23 @@
+{
+  "display_name": "荆棘",
+  "weight": 1.0,
+  "counters": {
+    "weapon": "melee"
+  },
+  "attributes": {
+    "minecraft:generic.armor": {
+      "op": "add",
+      "value": 8.0
+    }
+  },
+  "equipment": {
+    "chest": "minecraft:diamond_chestplate"
+  },
+  "equipment_enchantments": {
+    "chest": [
+      "minecraft:thorns:3"
+    ]
+  },
+  "name_suffix": "·荆棘",
+  "name_color": "B0B0B0"
+}
