@@ -1,7 +1,8 @@
 # Trial Portal（传送门试炼）
 
-Minecraft 1.20.1 / MinecraftForge 模组工程。**当前是工程骨架**：构建与加载已跑通，试炼玩法代码尚未实现。
-玩法设计规格来自原作者提供的文档，收录在 `docs/`；本机的实际情况与差异台账见 [docs/开发文档.md](docs/开发文档.md)。
+Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼（闯关 / 爬塔 / 试炼三种玩法共用一套框架）。
+玩法语义规格来自原作者提供的设计文档（收录在 `docs/`），本机事实、验证结果与差异台账见 [docs/开发文档.md](docs/开发文档.md)。
+内容全在数据包 JSON 里：改出什么怪、给什么奖励、BOSS 克制什么都不用重新编译。
 
 ## 模组身份
 
@@ -33,17 +34,23 @@ Minecraft 1.20.1 / MinecraftForge 模组工程。**当前是工程骨架**：构
 
 | 命令 | 结果 |
 | --- | --- |
-| `./gradlew build` | 绿，24s，产物 `build/libs/trial_portal-1.0.0.jar`（5.7 KB，骨架体积；jar 内 `mods.toml` 占位符已正确展开、无 mojibake） |
-| `./gradlew runGameTestServer` | 绿，35s，Forge 47.4.23 / MC 1.20.1 服务端完整启动，模组构造函数执行，`All 0 required tests passed :)` |
-| `./gradlew runData` | 绿，12s，但**不算加载验证**（见下） |
+| `./gradlew build` | 绿。含 `> Task :checkTrialData`（8 条词条 + 3 份试炼全通过）。产物 `build/libs/trial_portal-1.0.0.jar`（106 KB，38 个 class） |
+| `./gradlew checkTrialData` | 绿；两次反向测试（写坏 JSON）都以非 0 退出并点名条目 |
+| `./gradlew runGameTestServer -PselfTest` | 绿，**32 条运行期断言全通过**（数据包链路、BOSS 层取 mobs[0]、层段词条池生效、免疫真的取消伤害、属性修饰符随实体存档、NBT 往返一致、方块/物品注册、`/tei trial list` 真执行） |
+| `./gradlew runGameTestServer` | 绿，服务端完整启动 + `已加载 3 份 试炼 定义 / 8 份 BOSS 词条 定义`，不需要 EULA |
+| `./gradlew runData` | 绿，但**不算加载验证**（见下） |
 | `runClient` / `runServer` | 未跑（前者要图形窗口，后者要你自己同意 EULA） |
-| 试炼玩法代码 | **未实现**，0 个玩法类、0 份 trial/词条 JSON |
+
+玩法实现：23 个类 / 3,478 行 + 1 个工具类，数据包 3 份试炼 + 8 条词条 + 3 份掉落表 + 12 份资源。
+**还没有**：配方、客户端信息面板、真正的可穿越传送门、组队、原版 GameTest（缺结构模板，走 `-PselfTest` 通道）。
 
 ## 常用命令
 
 ```bash
-./gradlew build              # 编译打包（Git Bash）；Windows CMD/PowerShell 用 gradlew.bat build
-./gradlew runGameTestServer  # 加载验证：起服务端、跑模组完整生命周期后退出，不需要 EULA
+./gradlew build              # 编译打包 + checkTrialData 数据闸门（Git Bash；CMD/PowerShell 用 gradlew.bat）
+./gradlew checkTrialData     # 只校验 data/ 下的试炼与词条 JSON，不开游戏
+./gradlew runGameTestServer -PselfTest   # 加载 + 32 条运行期断言（无玩家能跑的那部分），不需要 EULA
+./gradlew runGameTestServer  # 只验加载与数据包链路
 ./gradlew runClient          # 带模组启动客户端（图形窗口）
 ./gradlew runData            # 数据生成，输出到 src/generated/resources/
 ./gradlew runServer          # 服务端（--nogui，需先在 run/eula.txt 同意 EULA）
@@ -64,14 +71,21 @@ trial-portal-1.20.1/
 ├── settings.gradle           # 插件仓库（镜像）+ foojay 工具链解析
 ├── gradle/wrapper/
 ├── docs/
-│   ├── 开发文档.md            # 本机实况、差异台账、目标架构、待办
-│   └── 设计文档-*.md          # 原作者提供的三份文档，原样收录
-├── verify-logs/               # 2026-09-25 三条命令的留档日志（可弃）
+│   ├── 开发文档.md            # 本机实况、差异台账、实现状态、待办
+│   ├── 设计文档-*.md          # 原作者提供的三份文档，原样收录
+│   └── 设计文档-传送门试炼配置指南（原作者）.md   # JSON 字段表 / TOML / 指令 / 克制关系
+├── verify-logs/               # 跑门留下的日志（已 gitignore，可重生成）
 └── src/
     ├── main/java/com/trialportal/
     │   ├── TrialPortal.java          # 主类（注册入口，内容待实现）
     │   └── registry/                 # ModBlocks / ModItems 的 DeferredRegister
-    ├── main/resources/               # 空目录（assets/data 随内容实现时建）
+    ├── main/resources/
+    │   ├── assets/trial_portal/      # 方块状态、模型（复用原版贴图）、中英文 lang
+    │   └── data/trial_portal/
+    │       ├── trials/               # 3 份试炼定义（challenge / tower / trial）
+    │       ├── boss_affixes/         # 8 条 BOSS 词条
+    │       └── loot_tables/blocks/   # 三个方块掉自己
+├── src/tools/java/            # checkTrialData 的校验程序，不打进 jar
     ├── main/templates/
     │   ├── META-INF/mods.toml        # 元数据模板，构建时由 generateModMetadata 展开占位符
     │   └── pack.mcmeta
@@ -82,7 +96,8 @@ trial-portal-1.20.1/
 
 1. `gradle.properties` 改元数据（`mod_id` 改动要同步主类 `MODID`、包目录、`assets/<mod_id>/`、`data/<mod_id>/`）。
    **注意**：`gradle.properties` 被 Gradle 按 ISO-8859-1 读取，这个文件里**不要写中文**，中文名走 lang 文件。
-2. 方块/物品/实体：在 `com.trialportal.registry` 下的 `ModBlocks` / `ModItems` 里 `register(...)`。
+2. 方块/物品/实体：在 `com.trialportal.registry` 下的 `ModBlocks` / `ModItems` / `ModBlockEntities` / `ModCreativeTabs` 里加。
+   新增运行期断言就加进 `trial/TrialSelfTest.run(...)`，它会在 `-PselfTest` 那条门上变红。
 3. 资源：`src/main/resources/assets/trial_portal/`（模型、方块状态、lang）、`data/trial_portal/`（配方、战利品表、标签）。
 4. 第三方模组依赖：`build.gradle` 的 `dependencies` 里用 `modCompileOnly` / `modLocalRuntime`（MDG 的 remapping 配置），不是 FG 的 `fg.deobf(...)`。
 
