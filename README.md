@@ -39,7 +39,8 @@ Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼�
 | `./gradlew runGameTestServer -PselfTest` | 绿，**32 条运行期断言全通过**（数据包链路、BOSS 层取 mobs[0]、层段词条池生效、免疫真的取消伤害、属性修饰符随实体存档、NBT 往返一致、方块/物品注册、`/tei trial list` 真执行） |
 | `./gradlew runGameTestServer` | 绿，服务端完整启动 + `已加载 3 份 试炼 定义 / 8 份 BOSS 词条 定义`，不需要 EULA |
 | `./gradlew runData` | 绿，但**不算加载验证**（见下） |
-| `runClient` / `runServer` | 未跑（前者要图形窗口，后者要你自己同意 EULA） |
+| `runClient` + playtest-bridge | 绿：真客户端跑完「右键开局 → 波次推进 → 潜行结算发奖（`/clear` 数到 5 件铁锭）→ 死亡转存 → bind 换爬塔 → 续关第 13 层 → BOSS 三词条 79.2 血」 |
+| `runServer` | 未跑（要你自己同意 EULA） |
 
 玩法实现：23 个类 / 3,478 行 + 1 个工具类，数据包 3 份试炼 + 8 条词条 + 3 份掉落表 + 12 份资源。
 **还没有**：配方、客户端信息面板、真正的可穿越传送门、组队、原版 GameTest（缺结构模板，走 `-PselfTest` 通道）。
