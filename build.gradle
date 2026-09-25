@@ -101,6 +101,10 @@ legacyForge {
         gameTestServer {
             type = "gameTestServer"
             systemProperty 'forge.enabledGameTestNamespaces', project.mod_id
+            // -PselfTest：服务端起来后跑一遍 TrialSelfTest 的断言，任何一条失败都会让本次运行非 0 退出
+            if (project.hasProperty('selfTest')) {
+                systemProperty 'trial_portal.selfTest', 'true'
+            }
         }
 
         data {
@@ -242,6 +246,34 @@ publishing {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
+}
+
+// ---------------------------------------------------------------------------
+// 数据包校验工具。src/tools/java 不会打进 jar。
+// 这里刻意用 JavaExec 而不是 Test 任务：项目路径含中文，Gradle 的 Test worker
+// 会因非 ASCII 路径加载不了测试类（详见 docs/开发文档.md §8）。
+// ---------------------------------------------------------------------------
+sourceSets {
+    tools {
+        java {
+            srcDirs = ['src/tools/java']
+        }
+        compileClasspath = sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath = sourceSets.tools.output + sourceSets.main.output + sourceSets.main.compileClasspath
+    }
+}
+
+var checkTrialData = tasks.register("checkTrialData", JavaExec) {
+    group = 'verification'
+    description = '用运行期同一套模型类校验 src/main/resources/data 下的试炼与词条 JSON（不开游戏、不需要 EULA）'
+    dependsOn 'compileToolsJava'
+    mainClass = 'com.trialportal.tools.TrialDataCheck'
+    classpath = sourceSets.tools.runtimeClasspath
+    args file('src/main/resources/data/trial_portal').absolutePath
+}
+
+tasks.named('build') {
+    dependsOn checkTrialData
 }
 
 // IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.
