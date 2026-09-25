@@ -4,8 +4,10 @@ import com.mojang.logging.LogUtils;
 import com.trialportal.boss.BossAffix;
 import com.trialportal.boss.BossAffixLibrary;
 import com.trialportal.boss.PlayerProfile;
+import com.trialportal.arena.ArenaService;
 import com.trialportal.config.TrialConfig;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.TagParser;
 import net.minecraft.network.chat.Component;
@@ -49,6 +51,8 @@ public class TrialManager extends SavedData
     private static final org.slf4j.Logger LOGGER = LogUtils.getLogger();
     private static final String DATA_NAME = "trial_portal";
     private static final String TAG_FLOORS = "tower_floors";
+    private static final String TAG_CELLS = "arena_cells";
+    private static final String TAG_HOMES = "arena_homes";
 
     public enum Outcome
     {
@@ -63,6 +67,9 @@ public class TrialManager extends SavedData
     private final Map<UUID, List<TrialDefinition.RewardEntry>> carriedOver = new HashMap<>();
     /** 玩家 UUID → 已通过的最高层数。 */
     private final Map<UUID, Integer> towerFloors = new LinkedHashMap<>();
+    /** 玩家 → 占用的隔间编号。与回返点一起进存档：否则重启后世界里留下没人认领的隔间平台。 */
+    private final Map<UUID, Integer> arenaCells = new LinkedHashMap<>();
+    private final Map<UUID, HomePos> arenaHomes = new LinkedHashMap<>();
     private int tickCounter;
 
     public static TrialManager get(MinecraftServer server)
@@ -73,6 +80,40 @@ public class TrialManager extends SavedData
     public static TrialManager load(CompoundTag tag)
     {
         TrialManager manager = new TrialManager();
+        if (tag.contains(TAG_CELLS))
+        {
+            CompoundTag cells = tag.getCompound(TAG_CELLS);
+            for (String key : cells.getAllKeys())
+            {
+                try
+                {
+                    manager.arenaCells.put(UUID.fromString(key), cells.getInt(key));
+                }
+                catch (IllegalArgumentException ignored)
+                {
+                    // 坏 UUID 直接丢，别让整份存档读不出来
+                }
+            }
+        }
+        if (tag.contains(TAG_HOMES))
+        {
+            CompoundTag homes = tag.getCompound(TAG_HOMES);
+            for (String key : homes.getAllKeys())
+            {
+                try
+                {
+                    HomePos home = HomePos.fromTag(homes.getCompound(key));
+                    if (home != null)
+                    {
+                        manager.arenaHomes.put(UUID.fromString(key), home);
+                    }
+                }
+                catch (IllegalArgumentException ignored)
+                {
+                    // 同上
+                }
+            }
+        }
         if (tag.contains(TAG_FLOORS))
         {
             CompoundTag floors = tag.getCompound(TAG_FLOORS);
@@ -97,7 +138,100 @@ public class TrialManager extends SavedData
         CompoundTag floors = new CompoundTag();
         this.towerFloors.forEach((uuid, floor) -> floors.putInt(uuid.toString(), floor));
         tag.put(TAG_FLOORS, floors);
+
+        CompoundTag cells = new CompoundTag();
+        this.arenaCells.forEach((uuid, cell) -> cells.putInt(uuid.toString(), cell));
+        tag.put(TAG_CELLS, cells);
+
+        CompoundTag homes = new CompoundTag();
+        this.arenaHomes.forEach((uuid, home) -> homes.put(uuid.toString(), home.toTag()));
+        tag.put(TAG_HOMES, homes);
         return tag;
+    }
+
+    // ------------------------------------------------------------- 场地记账
+
+    public int allocateCell(UUID playerId)
+    {
+        Integer existing = this.arenaCells.get(playerId);
+        if (existing != null)
+        {
+            return existing;
+        }
+        int candidate = 1;
+        while (this.arenaCells.containsValue(candidate))
+        {
+            candidate++;
+        }
+        this.arenaCells.put(playerId, candidate);
+        this.setDirty();
+        return candidate;
+    }
+
+    public int cellOf(UUID playerId)
+    {
+        return this.arenaCells.getOrDefault(playerId, ArenaService.LOBBY_CELL);
+    }
+
+    public void freeCell(UUID playerId)
+    {
+        if (this.arenaCells.remove(playerId) != null)
+        {
+            this.setDirty();
+        }
+    }
+
+    public Map<UUID, Integer> cellsSnapshot()
+    {
+        return new LinkedHashMap<>(this.arenaCells);
+    }
+
+    public void recordHome(UUID playerId, HomePos home)
+    {
+        if (!this.arenaHomes.containsKey(playerId))
+        {
+            this.arenaHomes.put(playerId, home);
+            this.setDirty();
+        }
+    }
+
+    @Nullable
+    public HomePos takeHome(UUID playerId)
+    {
+        HomePos home = this.arenaHomes.remove(playerId);
+        if (home != null)
+        {
+            this.setDirty();
+        }
+        return home;
+    }
+
+    /** 进维度前站在哪儿、要送回哪儿。 */
+    public record HomePos(ResourceKey<Level> dimension, double x, double y, double z, float yaw, float pitch)
+    {
+        CompoundTag toTag()
+        {
+            CompoundTag tag = new CompoundTag();
+            tag.putString("dim", this.dimension.location().toString());
+            tag.putDouble("x", this.x);
+            tag.putDouble("y", this.y);
+            tag.putDouble("z", this.z);
+            tag.putFloat("yaw", this.yaw);
+            tag.putFloat("pitch", this.pitch);
+            return tag;
+        }
+
+        @Nullable
+        static HomePos fromTag(CompoundTag tag)
+        {
+            ResourceLocation dim = ResourceLocation.tryParse(tag.getString("dim"));
+            if (dim == null)
+            {
+                return null;
+            }
+            return new HomePos(ResourceKey.create(Registries.DIMENSION, dim),
+                    tag.getDouble("x"), tag.getDouble("y"), tag.getDouble("z"), tag.getFloat("yaw"), tag.getFloat("pitch"));
+        }
     }
 
     // ------------------------------------------------------------------ 查询
@@ -272,7 +406,7 @@ public class TrialManager extends SavedData
                 "[试炼] 你死了 · " + definition.displayName);
         // 死亡由原版重生流程送玩家回去，这里只拆隔间、清 cell 记录
         com.trialportal.arena.ArenaService.releaseCell(
-                com.trialportal.arena.ArenaService.level(player.server), player.getUUID());
+                com.trialportal.arena.ArenaService.level(player.server), this, player.getUUID(), session.cell);
     }
 
     private void onTowerDeath(ServerPlayer player, TrialSession session)
@@ -320,7 +454,8 @@ public class TrialManager extends SavedData
             // 掉线：只做清怪 + 丢会话 + 拆隔间，不走结算流程（不发奖也不提示）
             clearMobs(server.getLevel(session.dimension), session);
             this.sessions.remove(session.playerId);
-            com.trialportal.arena.ArenaService.releaseCell(com.trialportal.arena.ArenaService.level(server), session.playerId);
+            com.trialportal.arena.ArenaService.releaseCell(com.trialportal.arena.ArenaService.level(server),
+                    this, session.playerId, session.cell);
             return;
         }
         TrialDefinition definition = TrialLibrary.get(session.definitionId);
@@ -337,10 +472,19 @@ public class TrialManager extends SavedData
         }
         if (!isInsideArena(player, session, definition))
         {
+            session.outsideTicks += interval;
+            int grace = TrialConfig.GENERAL_ABANDON_GRACE_TICKS.get();
+            if (session.outsideTicks < grace)
+            {
+                // 先警告再作废：跑远捡个东西不该直接输掉一整场
+                TrialFeedback.actionbar(player, "已离开试炼范围，" + ((grace - session.outsideTicks) / 20 + 1) + " 秒内回来，否则本场作废");
+                return;
+            }
             end(player, session, definition, Outcome.ABANDONED);
             TrialFeedback.announce(player, "试炼放弃", "已离开试炼范围", "[试炼] 你离开了范围，累计奖励作废");
             return;
         }
+        session.outsideTicks = 0;
         pruneDeadMobs(level, session);
         switch (session.phase)
         {

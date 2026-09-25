@@ -5,9 +5,14 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.mojang.logging.LogUtils;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.FileToIdConverter;
+import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.server.packs.resources.SimpleJsonResourceReloadListener;
+import net.minecraft.util.GsonHelper;
 import net.minecraft.util.profiling.ProfilerFiller;
+
+import java.io.Reader;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -24,6 +29,7 @@ public class JsonReloadListener<T> extends SimpleJsonResourceReloadListener
     public static final Gson GSON = (new GsonBuilder()).setLenient().disableHtmlEscaping().create();
 
     private final Class<T> type;
+    private final String directory;
     private final String label;
     private final BiFunction<String, T, String> validator;
     private final Consumer<Map<String, T>> sink;
@@ -37,9 +43,39 @@ public class JsonReloadListener<T> extends SimpleJsonResourceReloadListener
     {
         super(GSON, directory);
         this.type = type;
+        this.directory = directory;
         this.label = label;
         this.validator = validator;
         this.sink = sink;
+    }
+
+    /**
+     * 不用父类的 scanDirectory：它在两个不同路径映射到同一个 ID 时抛 IllegalStateException，
+     * 会让整次 /reload 一起崩。这里自己扫，冲突改成「后一份覆盖 + 一条 warn」。
+     */
+    @Override
+    protected Map<ResourceLocation, JsonElement> prepare(ResourceManager manager, ProfilerFiller profiler)
+    {
+        Map<ResourceLocation, JsonElement> files = new LinkedHashMap<>();
+        FileToIdConverter converter = FileToIdConverter.json(this.directory);
+        for (Map.Entry<ResourceLocation, Resource> entry : converter.listMatchingResources(manager).entrySet())
+        {
+            ResourceLocation id = converter.fileToId(entry.getKey());
+            try (Reader reader = entry.getValue().openAsReader())
+            {
+                JsonElement previous = files.put(id, GsonHelper.fromJson(GSON, reader, JsonElement.class));
+                if (previous != null)
+                {
+                    LogUtils.getLogger().warn("[trial_portal] {} 定义 {} 由多个文件提供，取 {} 这一份",
+                            this.label, id, entry.getKey());
+                }
+            }
+            catch (Exception exception)
+            {
+                LogUtils.getLogger().error("[trial_portal] 无法读取{}文件 {}", this.label, entry.getKey(), exception);
+            }
+        }
+        return files;
     }
 
     @Override

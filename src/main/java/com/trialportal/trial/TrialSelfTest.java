@@ -130,7 +130,7 @@ public final class TrialSelfTest
                         ResourceLocation.fromNamespaceAndPath(TrialPortal.MODID, "arena_exit")) != null,
                 "返回终端方块已注册");
         int radius = com.trialportal.arena.ArenaService.radius();
-        int spacing = TrialConfig.ARENA_CELL_SPACING.get();
+        int spacing = com.trialportal.arena.ArenaService.spacing();
         check(failures, spacing >= radius * 2 + 8,
                 "隔间间隔 " + spacing + " 应不小于两倍平台半径再加边距（" + (radius * 2 + 8) + "），否则隔壁间会挨上");
         var arenaLevel = server.getLevel(arenaKey);
@@ -161,12 +161,18 @@ public final class TrialSelfTest
             int cellSecond = countPlatformBlocks(arenaLevel, cell, radius);
             check(failures, cellFirst > 0 && cellFirst == cellSecond,
                     "隔间重复建台必须幂等：第一次 " + cellFirst + " 块，第二次 " + cellSecond + " 块");
+            int orphanCellsBefore = com.trialportal.arena.ArenaService.usedCellCount(server);
             com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 1);
             int afterRelease = countPlatformBlocks(arenaLevel, cell, radius);
             check(failures, afterRelease == 0,
                     "结算后隔间平台必须被拆掉，残留 " + afterRelease + " 块");
             check(failures, countPlatformBlocks(arenaLevel, lobby, radius) > 0,
                     "拆隔间不能顺手把大厅也拆了");
+            check(failures, com.trialportal.arena.ArenaService.usedCellCount(server) == orphanCellsBefore,
+                    "releaseCellAt 只拆台，不该动记账");
+            check(failures, com.trialportal.arena.ArenaService.findSafeLanding(arenaLevel, lobby.offset(0, 3, 0))
+                            .getY() <= lobby.getY() + 1,
+                    "落点安全搜索应把悬空坐标拉回平台上，而不是原地不动");
         }
 
         // 直接执行一遍 /tei trial list：比查指令树里有没有这个名字更硬

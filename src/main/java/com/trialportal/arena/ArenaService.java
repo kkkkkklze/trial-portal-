@@ -18,27 +18,28 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.RelativeMovement;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import net.minecraftforge.registries.ForgeRegistries;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Collection;
 import java.util.EnumSet;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 /**
  * 试炼场地维度：大厅 + 每人一个隔间。
  * <p>
- * 平台全部由 {@code setBlock} 程序化生成，不用原版 structure 模板（1.20.1 的模板要二进制 .nbt 资产，
- * 既不可 diff 也进不了 checkTrialData 的校验）。因此生成必须幂等：重复进入同一个 cell 不会越铺越厚。
+ * 平台全部 {@code setBlock} 程序化生成，不用原版 structure 模板（1.20.1 的模板要二进制 .nbt 资产，
+ * 既不可 diff 也进不了 checkTrialData 的校验）。因此建台必须幂等：重复进入同一个隔间不会越铺越厚。
+ * <p>
+ * 谁占着哪个隔间、该送回哪儿，一律记在 {@link TrialManager} 的存档里，不放进程内 static Map——
+ * CompactMachines 的教训是「只断边不删房」留下孤儿切片，而 static Map 重启即丢是同一个病。
  */
 public final class ArenaService
 {
@@ -51,14 +52,8 @@ public final class ArenaService
     public static final int LOBBY_CELL = 0;
 
     private static final org.slf4j.Logger LOGGER = LogUtils.getLogger();
-    private static final Map<UUID, Integer> CELLS = new HashMap<>();
-    private static final Map<UUID, Home> HOMES = new HashMap<>();
-    private static final Set<Integer> USED_CELLS = new HashSet<>();
-    private static int nextCell = 1;
 
     private ArenaService() {}
-
-    public record Home(ResourceKey<Level> dimension, BlockPos pos, float yaw, float pitch) {}
 
     @Nullable
     public static ServerLevel level(MinecraftServer server)
@@ -71,37 +66,48 @@ public final class ArenaService
         return ARENA.equals(key);
     }
 
+    public static boolean isInArena(ServerPlayer player)
+    {
+        return isArena(player.level().dimension());
+    }
+
     public static int radius()
     {
         return Math.max(1, TrialConfig.ARENA_PLATFORM_RADIUS.get());
     }
 
+    /** 间隔至少要装下两个平台加围栏，否则隔壁间会挨在一起。 */
+    public static int spacing()
+    {
+        return Math.max(radius() * 2 + 8, TrialConfig.ARENA_CELL_SPACING.get());
+    }
+
     public static BlockPos cellOrigin(int cell)
     {
-        int spacing = Math.max(radius() * 2 + 8, TrialConfig.ARENA_CELL_SPACING.get());
-        return new BlockPos((int) ((long) cell * spacing), FLOOR_Y, 0);
+        return new BlockPos((int) ((long) cell * spacing()), FLOOR_Y, 0);
     }
 
     // ------------------------------------------------------------------ 进出
 
-    /** 野外右键传送门 = 进大厅。记下回返点，之后结算/死亡/放弃都回这里。 */
+    /** 野外右键传送门 = 进大厅。记下回返点，之后结算/放弃/中止都回这里。 */
     public static boolean enterLobby(ServerPlayer player)
     {
         ServerLevel arena = level(player.server);
         if (arena == null)
         {
-            player.displayClientMessage(net.minecraft.network.chat.Component
-                    .literal("试炼场地维度没有加载（数据包被禁用或 dimension/arena.json 缺失）"), false);
+            TrialFeedback.failure(player, "试炼场地维度没有加载（数据包被禁用或 dimension/arena.json 缺失）");
             LOGGER.warn("[trial_portal] 进大厅失败：找不到维度 {}", ARENA.location());
             return false;
         }
+        TrialManager manager = TrialManager.get(player.server);
         UUID uuid = player.getUUID();
-        TrialSession session = TrialManager.get(player.server).sessionOf(uuid);
-        HOMES.putIfAbsent(uuid, new Home(player.level().dimension(), player.blockPosition(), player.getYRot(), player.getXRot()));
-        int cell = session == null ? LOBBY_CELL : session.cell;
-        BlockPos origin = cellOrigin(cell);
-        buildPlatform(arena, origin, null);
-        teleport(arena, player, origin);
+        TrialSession session = manager.sessionOf(uuid);
+        manager.recordHome(uuid, new TrialManager.HomePos(player.level().dimension(), player.getX(), player.getY(),
+                player.getZ(), player.getYRot(), player.getXRot()));
+        BlockPos origin = cellOrigin(session == null ? LOBBY_CELL : manager.cellOf(uuid));
+        buildPlatform(arena, origin, session == null ? null : modeOf(session));
+        teleportSafe(arena, player, origin, session == null ? 180.0F : player.getYRot(),
+                session == null ? 0.0F : player.getXRot());
         if (session == null)
         {
             TrialFeedback.title(player, "试炼大厅", "右键对应传送门选择玩法");
@@ -118,88 +124,107 @@ public final class ArenaService
             TrialFeedback.failure(player, "试炼场地维度没加载，无法开局");
             return false;
         }
-        UUID uuid = player.getUUID();
-        int cell = CELLS.computeIfAbsent(uuid, key -> {
-            int candidate = nextCell++;
-            USED_CELLS.add(candidate);
-            return candidate;
-        });
-        USED_CELLS.add(cell);
+        TrialManager manager = TrialManager.get(player.server);
+        int cell = manager.allocateCell(player.getUUID());
         BlockPos origin = cellOrigin(cell);
         buildPlatform(arena, origin, definition.mode);
-        TrialManager manager = TrialManager.get(player.server);
         if (!manager.start(player, definition, origin, cell))
         {
+            manager.freeCell(player.getUUID());
             TrialFeedback.failure(player, "开局失败：见服务端日志（trial_portal）");
             return false;
         }
         // 开局之后必须把玩家送进隔间：判定中心已经跟着 origin 走了，人还留在大厅会在下一 tick 被判离开范围
-        // 传送时 yaw=180 正对北侧的隔间终端（origin.offset(0,1,-3)）
-        teleport(arena, player, origin);
+        teleportSafe(arena, player, origin, 180.0F, 0.0F);
         return true;
     }
 
-    /** 结算 / 放弃 / 中止后回野外；隔间按配置拆掉。 */
+    /** 结算 / 放弃 / 中止后回野外。 */
     public static void returnHome(ServerPlayer player)
     {
         UUID uuid = player.getUUID();
-        Home home = HOMES.remove(uuid);
-        ServerLevel arena = player.server.getLevel(ARENA);
+        ServerLevel arena = level(player.server);
+        TrialManager manager = TrialManager.get(player.server);
+        TrialManager.HomePos home = manager.takeHome(uuid);
+        int cell = manager.cellOf(uuid);
         // 先把人送走再拆台：反过来会让玩家站在被抽掉平台的虚空里掉死
         ServerLevel target = home == null ? null : player.server.getLevel(home.dimension());
         if (target == null)
         {
             target = player.server.overworld();
         }
-        BlockPos pos = home == null ? target.getSharedSpawnPos() : home.pos();
-        float yaw = home == null ? 0.0F : home.yaw();
-        float pitch = home == null ? 0.0F : home.pitch();
-        player.teleportTo(target, pos.getX() + 0.5D, pos.getY(), pos.getZ() + 0.5D,
-                EnumSet.noneOf(RelativeMovement.class), yaw, pitch);
-        LOGGER.info("[trial_portal] 送回 {} @ {} {}", home == null ? "世界出生点（没有回返记录）" : home.dimension().location(),
-                pos.toShortString(), player.getScoreboardName());
-        releaseCell(arena, uuid);
+        BlockPos desired = home == null ? target.getSharedSpawnPos() : BlockPos.containing(home.x(), home.y(), home.z());
+        float yaw = home == null ? player.getYRot() : home.yaw();
+        float pitch = home == null ? player.getXRot() : home.pitch();
+        teleportSafe(target, player, desired, yaw, pitch);
+        LOGGER.info("[trial_portal] 送回 {} @ {}（{}）",
+                home == null ? "世界出生点（没有回返记录）" : home.dimension().location(),
+                desired.toShortString(), player.getScoreboardName());
+        releaseCell(arena, manager, uuid, cell);
     }
 
-    /** 拆掉这个玩家占的隔间（大厅永不拆）。cell 记录会被清掉。 */
-    public static void releaseCell(@Nullable ServerLevel arena, UUID uuid)
+    /** 拆掉这个玩家占的隔间（大厅永不拆）并清掉记账。 */
+    public static void releaseCell(@Nullable ServerLevel arena, TrialManager manager, UUID playerId, int cell)
     {
-        Integer cell = CELLS.remove(uuid);
-        if (cell == null || cell == LOBBY_CELL)
-        {
-            return;
-        }
-        USED_CELLS.remove(cell);
-        if (arena == null || !Boolean.TRUE.equals(TrialConfig.ARENA_CLEAR_CELL_ON_END.get()))
+        manager.freeCell(playerId);
+        if (arena == null || cell == LOBBY_CELL || !Boolean.TRUE.equals(TrialConfig.ARENA_CLEAR_CELL_ON_END.get()))
         {
             return;
         }
         releaseCellAt(arena, cell);
     }
 
-    /** 拆掉指定编号隔间的平台并释放被强制加载的区块（大厅编号 0 永不拆）。 */
     public static void releaseCellAt(ServerLevel arena, int cell)
     {
         if (cell == LOBBY_CELL)
         {
             return;
         }
-        clearPlatform(arena, cellOrigin(cell));
+        BlockPos origin = cellOrigin(cell);
+        forceChunks(arena, origin); // 隔间可能整个没加载，不先加载就拆不干净
+        clearPlatform(arena, origin);
+        unforceChunks(arena, origin);
     }
 
-    private static void teleport(ServerLevel arena, ServerPlayer player, BlockPos origin)
+    /**
+     * 启动后清扫孤儿隔间：存档里记着有人占格子，但那个人已经没有会话了
+     * （重启、崩溃、被踢都会留下这种状态）。不清就会在虚空里越攒越多没人认领的平台。
+     *
+     * @return 回收掉的隔间数
+     */
+    public static int sweepOrphanCells(MinecraftServer server)
     {
-        player.teleportTo(arena, origin.getX() + 0.5D, origin.getY() + 1.0D, origin.getZ() + 0.5D,
-                EnumSet.noneOf(RelativeMovement.class), 180.0F, 0.0F);
+        ServerLevel arena = level(server);
+        if (arena == null)
+        {
+            return 0;
+        }
+        TrialManager manager = TrialManager.get(server);
+        int swept = 0;
+        for (Map.Entry<UUID, Integer> entry : manager.cellsSnapshot().entrySet())
+        {
+            if (manager.sessionOf(entry.getKey()) == null)
+            {
+                releaseCellAt(arena, entry.getValue());
+                manager.freeCell(entry.getKey());
+                manager.takeHome(entry.getKey());
+                swept++;
+            }
+        }
+        if (swept > 0)
+        {
+            LOGGER.info("[trial_portal] 启动清扫：回收 {} 个无主隔间", swept);
+        }
+        return swept;
     }
 
-    // ------------------------------------------------------------------ 建场
+    // ------------------------------------------------------------------ 建台
 
     /**
      * @param mode null = 大厅（摆三个模式终端 + 出口）；否则 = 隔间（摆该模式的终端 + 出口，
      *             玩家在里面要靠它继续下一波与结算离场）
      */
-    public static void buildPlatform(ServerLevel level, BlockPos origin, TrialMode mode)
+    public static void buildPlatform(ServerLevel level, BlockPos origin, @Nullable TrialMode mode)
     {
         forceChunks(level, origin);
         BlockState floor = platformBlock();
@@ -208,6 +233,10 @@ public final class ArenaService
         {
             for (int dz = -r; dz <= r; dz++)
             {
+                if (Math.max(Math.abs(dx), Math.abs(dz)) > r)
+                {
+                    continue;
+                }
                 BlockPos pos = origin.offset(dx, 0, dz);
                 if (!level.getBlockState(pos).isAir())
                 {
@@ -215,7 +244,7 @@ public final class ArenaService
                 }
                 level.setBlock(pos, floor, Block.UPDATE_ALL);
                 BlockPos above = pos.above();
-                if (level.getBlockState(above).isAir() && Math.max(Math.abs(dx), Math.abs(dz)) == r)
+                if (Math.max(Math.abs(dx), Math.abs(dz)) == r && level.getBlockState(above).isAir())
                 {
                     level.setBlock(above, Blocks.GLASS.defaultBlockState(), Block.UPDATE_ALL); // 围栏，防止一脚踩空掉虚空
                 }
@@ -238,6 +267,14 @@ public final class ArenaService
     private static void clearPlatform(ServerLevel level, BlockPos origin)
     {
         int r = radius();
+        AABB region = new AABB(origin.offset(-r, -2, -r), origin.offset(r + 1, 6, r + 1));
+        for (Entity entity : level.getEntitiesOfClass(Entity.class, region))
+        {
+            if (!(entity instanceof ServerPlayer))
+            {
+                entity.discard(); // 拆台时别把留在里面的怪变成悬空实体
+            }
+        }
         for (int dx = -r; dx <= r; dx++)
         {
             for (int dz = -r; dz <= r; dz++)
@@ -251,34 +288,30 @@ public final class ArenaService
                 level.setBlock(pos.above(), Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
             }
         }
-        unforceChunks(level, origin);
     }
 
     private static void placeTerminal(ServerLevel level, BlockPos pos, BlockState state)
     {
-        if (level.getBlockState(pos).isAir() || level.getBlockState(pos).getBlock() instanceof TrialPortalBlock)
+        BlockState existing = level.getBlockState(pos);
+        if (existing.isAir() || existing.getBlock() instanceof TrialPortalBlock)
         {
             level.setBlock(pos, state, Block.UPDATE_ALL);
         }
     }
 
-    /** 平台会跨区块，先把这三乘三格区块强制加载，否则 setBlock 只能铺到已加载的部分。 */
+    /** 平台会跨区块，先把覆盖范围强制加载，否则 setBlock 只能铺到已加载的部分。 */
     private static void forceChunks(ServerLevel level, BlockPos origin)
     {
-        int span = (radius() >> 4) + 1;
-        int centerChunkX = origin.getX() >> 4;
-        int centerChunkZ = origin.getZ() >> 4;
-        for (int dx = -span; dx <= span; dx++)
-        {
-            for (int dz = -span; dz <= span; dz++)
-            {
-                level.setChunkForced(centerChunkX + dx, centerChunkZ + dz, true);
-            }
-        }
+        setForced(level, origin, true);
     }
 
     private static void unforceChunks(ServerLevel level, BlockPos origin)
     {
+        setForced(level, origin, false);
+    }
+
+    private static void setForced(ServerLevel level, BlockPos origin, boolean forced)
+    {
         int span = (radius() >> 4) + 1;
         int centerChunkX = origin.getX() >> 4;
         int centerChunkZ = origin.getZ() >> 4;
@@ -286,7 +319,7 @@ public final class ArenaService
         {
             for (int dz = -span; dz <= span; dz++)
             {
-                level.setChunkForced(centerChunkX + dx, centerChunkZ + dz, false);
+                level.setChunkForced(centerChunkX + dx, centerChunkZ + dz, forced);
             }
         }
     }
@@ -298,8 +331,6 @@ public final class ArenaService
         return (block == null ? Blocks.POLISHED_BLACKSTONE_BRICKS : block).defaultBlockState();
     }
 
-    // ------------------------------------------------------------------ 查询
-
     private static BlockState blockFor(TrialMode mode)
     {
         return switch (mode)
@@ -310,30 +341,77 @@ public final class ArenaService
         };
     }
 
-    public static boolean isInArena(ServerPlayer player)
-    {
-        return isArena(player.level().dimension());
-    }
-
-    public static int cellOf(UUID uuid)
-    {
-        return CELLS.getOrDefault(uuid, LOBBY_CELL);
-    }
-
-    public static int usedCellCount()
-    {
-        return CELLS.size();
-    }
-
-    /** 大厅里那个模式该开哪份试炼：沿用「绑定优先，否则按 ID 字典序」。 */
     @Nullable
-    public static TrialDefinition resolveFor(TrialMode mode)
+    private static TrialMode modeOf(TrialSession session)
     {
-        return TrialLibrary.resolve(mode, null);
+        TrialDefinition definition = TrialLibrary.get(session.definitionId);
+        return definition == null ? null : definition.mode;
     }
 
-    public static Collection<Integer> activeCells()
+    // ------------------------------------------------------------------ 传送
+
+    /**
+     * 落点做安全搜索：脚下实心、头顶至少两格空气。直接按坐标硬塞会出两种事故——
+     * 卡进方块里，或者平台还没铺到那一层就掉进虚空。
+     */
+    private static void teleportSafe(ServerLevel target, ServerPlayer player, BlockPos desired, float yaw, float pitch)
     {
-        return USED_CELLS;
+        BlockPos landing = findSafeLanding(target, desired);
+        player.teleportTo(target, landing.getX() + 0.5D, landing.getY(), landing.getZ() + 0.5D,
+                EnumSet.noneOf(RelativeMovement.class), yaw, pitch);
+    }
+
+    public static BlockPos findSafeLanding(ServerLevel level, BlockPos desired)
+    {
+        if (isSafeSpot(level, desired))
+        {
+            return desired;
+        }
+        for (int dy = 1; dy <= 4; dy++)
+        {
+            if (isSafeSpot(level, desired.above(dy)))
+            {
+                return desired.above(dy);
+            }
+        }
+        for (int dy = 1; dy <= 4; dy++)
+        {
+            if (isSafeSpot(level, desired.below(dy)))
+            {
+                return desired.below(dy);
+            }
+        }
+        int r = radius();
+        for (int dx = -r; dx <= r; dx++)
+        {
+            for (int dz = -r; dz <= r; dz++)
+            {
+                BlockPos candidate = new BlockPos(desired.getX() + dx, desired.getY(), desired.getZ() + dz);
+                if (isSafeSpot(level, candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+        LOGGER.warn("[trial_portal] {} 附近找不到安全落点，按原坐标传送", desired.toShortString());
+        return desired;
+    }
+
+    private static boolean isSafeSpot(ServerLevel level, BlockPos pos)
+    {
+        return level.getBlockState(pos.below()).isRedstoneConductor(level, pos.below())
+                && level.getBlockState(pos).isAir() && level.getBlockState(pos.above()).isAir();
+    }
+
+    // ------------------------------------------------------------------ 查询
+
+    public static int cellOf(MinecraftServer server, UUID playerId)
+    {
+        return TrialManager.get(server).cellOf(playerId);
+    }
+
+    public static int usedCellCount(MinecraftServer server)
+    {
+        return TrialManager.get(server).cellsSnapshot().size();
     }
 }

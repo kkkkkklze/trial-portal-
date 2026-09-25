@@ -29,6 +29,7 @@ public final class TrialConfig
     public static final ForgeConfigSpec.IntValue GENERAL_MAX_SPAWNS_PER_WAVE;
     public static final ForgeConfigSpec.IntValue GENERAL_MAX_ALIVE_MOBS;
     public static final ForgeConfigSpec.BooleanValue GENERAL_REWARD_TO_INVENTORY;
+    public static final ForgeConfigSpec.IntValue GENERAL_ABANDON_GRACE_TICKS;
 
     public static final ForgeConfigSpec.IntValue ARENA_CELL_SPACING;
     public static final ForgeConfigSpec.IntValue ARENA_PLATFORM_RADIUS;
@@ -95,6 +96,9 @@ public final class TrialConfig
         GENERAL_REWARD_TO_INVENTORY = BUILDER
                 .comment("结算时奖励进背包；false 则掉在脚下。三种玩法共用这一个开关")
                 .define("reward_to_inventory", true);
+        GENERAL_ABANDON_GRACE_TICKS = BUILDER
+                .comment("离开范围后给多少 tick 的宽限，期间回到范围内就不作废；0 = 一出范围立刻作废")
+                .defineInRange("abandon_grace_ticks", 100, 0, 20 * 600);
         BUILDER.pop();
 
         BUILDER.push("arena");

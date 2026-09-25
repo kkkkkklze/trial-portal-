@@ -1,8 +1,10 @@
 package com.trialportal.trial;
 
 import com.trialportal.TrialPortal;
+import com.trialportal.arena.ArenaService;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -24,6 +26,13 @@ public final class TrialEvents
             return;
         }
         TrialManager.get(event.getServer()).tick(event.getServer());
+    }
+
+    /** 启动后清扫孤儿隔间：上一次运行留下的无主平台不会自己消失。 */
+    @SubscribeEvent
+    public static void onServerStarted(ServerStartedEvent event)
+    {
+        ArenaService.sweepOrphanCells(event.getServer());
     }
 
     @SubscribeEvent

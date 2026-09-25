@@ -43,6 +43,8 @@ public class TrialSession
     public final Set<UUID> aliveMobs = new LinkedHashSet<>();
     /** 最近一次贴到 BOSS 身上的词条 ID，用于播报与 status。 */
     public final List<String> bossAffixes = new ArrayList<>();
+    /** 连续处于范围外的累计 tick；回到范围内清零。 */
+    public int outsideTicks;
 
     public TrialSession(UUID playerId, String playerName, String definitionId, ResourceKey<Level> dimension, BlockPos origin)
     {

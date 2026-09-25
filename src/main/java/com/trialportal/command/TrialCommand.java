@@ -200,7 +200,7 @@ public final class TrialCommand
                         + (arena == null ? "：未加载" : "：已加载")
                         + " · 平台半径 " + radius
                         + " · 隔间间隔 " + com.trialportal.config.TrialConfig.ARENA_CELL_SPACING.get()
-                        + " · 占用中的隔间 " + com.trialportal.arena.ArenaService.usedCellCount())
+                        + " · 占用中的隔间 " + com.trialportal.arena.ArenaService.usedCellCount(context.getSource().getServer()))
                 .withStyle(arena == null ? ChatFormatting.RED : ChatFormatting.AQUA), false);
         return arena == null ? 0 : 1;
     }
