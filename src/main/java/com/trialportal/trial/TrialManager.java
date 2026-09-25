@@ -165,6 +165,8 @@ public class TrialManager extends SavedData
         if (!beginWave(player, session, definition))
         {
             this.sessions.remove(player.getUUID());
+            LOGGER.warn("[trial_portal] 开局失败：{} 的第 {} 波取不到内容（定义或 scaling 有问题）",
+                    definition.id(), session.waveNumber());
             return false;
         }
         TrialFeedback.announce(player,
@@ -414,11 +416,13 @@ public class TrialManager extends SavedData
         TrialDefinition.WaveContent content = definition.waveFor(session.waveIndex);
         if (content == null)
         {
+            LOGGER.warn("[trial_portal] {} 取不到第 {} 波内容", definition.id(), session.waveNumber());
             return false;
         }
         ServerLevel level = player.server.getLevel(session.dimension);
         if (level == null)
         {
+            LOGGER.warn("[trial_portal] 会话所在维度 {} 没加载", session.dimension.location());
             return false;
         }
         session.aliveMobs.clear();

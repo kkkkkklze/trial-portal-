@@ -1,6 +1,7 @@
 package com.trialportal.trial;
 
 import com.trialportal.TrialPortal;
+import com.trialportal.block.TrialPortalBlock;
 import com.trialportal.boss.BossAffix;
 import com.trialportal.boss.BossAffixLibrary;
 import com.trialportal.config.TrialConfig;
@@ -136,9 +137,9 @@ public final class TrialSelfTest
         if (arenaLevel != null)
         {
             BlockPos lobby = com.trialportal.arena.ArenaService.cellOrigin(com.trialportal.arena.ArenaService.LOBBY_CELL);
-            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, lobby, true);
+            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, lobby, null);
             int first = countPlatformBlocks(arenaLevel, lobby, radius);
-            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, lobby, true);
+            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, lobby, null);
             int second = countPlatformBlocks(arenaLevel, lobby, radius);
             check(failures, first > 0 && first == second,
                     "平台生成必须幂等：第一次 " + first + " 块，第二次 " + second + " 块");
@@ -148,6 +149,24 @@ public final class TrialSelfTest
             check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, 4)).getBlock()
                             instanceof com.trialportal.block.ArenaExitBlock,
                     "大厅应摆出返回终端");
+            BlockPos cell = com.trialportal.arena.ArenaService.cellOrigin(1);
+            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, cell, TrialMode.CHALLENGE);
+            check(failures, arenaLevel.getBlockState(cell.offset(0, 1, -3)).getBlock() instanceof TrialPortalBlock,
+                    "隔间必须有该模式的终端，否则玩家进去就没法继续下一波与结算");
+            check(failures, arenaLevel.getBlockState(cell.offset(0, 1, 3)).getBlock()
+                            instanceof com.trialportal.block.ArenaExitBlock,
+                    "隔间必须有返回终端");
+            int cellFirst = countPlatformBlocks(arenaLevel, cell, radius);
+            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, cell, TrialMode.CHALLENGE);
+            int cellSecond = countPlatformBlocks(arenaLevel, cell, radius);
+            check(failures, cellFirst > 0 && cellFirst == cellSecond,
+                    "隔间重复建台必须幂等：第一次 " + cellFirst + " 块，第二次 " + cellSecond + " 块");
+            com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 1);
+            int afterRelease = countPlatformBlocks(arenaLevel, cell, radius);
+            check(failures, afterRelease == 0,
+                    "结算后隔间平台必须被拆掉，残留 " + afterRelease + " 块");
+            check(failures, countPlatformBlocks(arenaLevel, lobby, radius) > 0,
+                    "拆隔间不能顺手把大厅也拆了");
         }
 
         // 直接执行一遍 /tei trial list：比查指令树里有没有这个名字更硬

@@ -100,7 +100,7 @@ public final class ArenaService
         HOMES.putIfAbsent(uuid, new Home(player.level().dimension(), player.blockPosition(), player.getYRot(), player.getXRot()));
         int cell = session == null ? LOBBY_CELL : session.cell;
         BlockPos origin = cellOrigin(cell);
-        buildPlatform(arena, origin, cell == LOBBY_CELL);
+        buildPlatform(arena, origin, null);
         teleport(arena, player, origin);
         if (session == null)
         {
@@ -115,6 +115,7 @@ public final class ArenaService
         ServerLevel arena = level(player.server);
         if (arena == null)
         {
+            TrialFeedback.failure(player, "试炼场地维度没加载，无法开局");
             return false;
         }
         UUID uuid = player.getUUID();
@@ -125,12 +126,16 @@ public final class ArenaService
         });
         USED_CELLS.add(cell);
         BlockPos origin = cellOrigin(cell);
-        buildPlatform(arena, origin, false);
+        buildPlatform(arena, origin, definition.mode);
         TrialManager manager = TrialManager.get(player.server);
         if (!manager.start(player, definition, origin, cell))
         {
+            TrialFeedback.failure(player, "开局失败：见服务端日志（trial_portal）");
             return false;
         }
+        // 开局之后必须把玩家送进隔间：判定中心已经跟着 origin 走了，人还留在大厅会在下一 tick 被判离开范围
+        // 传送时 yaw=180 正对北侧的隔间终端（origin.offset(0,1,-3)）
+        teleport(arena, player, origin);
         return true;
     }
 
@@ -139,20 +144,21 @@ public final class ArenaService
     {
         UUID uuid = player.getUUID();
         Home home = HOMES.remove(uuid);
-        releaseCell(player.server.getLevel(ARENA), uuid);
-        if (home == null)
-        {
-            return;
-        }
-        MinecraftServer server = player.server;
-        ServerLevel target = server.getLevel(home.dimension());
+        ServerLevel arena = player.server.getLevel(ARENA);
+        // 先把人送走再拆台：反过来会让玩家站在被抽掉平台的虚空里掉死
+        ServerLevel target = home == null ? null : player.server.getLevel(home.dimension());
         if (target == null)
         {
-            target = server.overworld();
+            target = player.server.overworld();
         }
-        BlockPos pos = home.pos();
+        BlockPos pos = home == null ? target.getSharedSpawnPos() : home.pos();
+        float yaw = home == null ? 0.0F : home.yaw();
+        float pitch = home == null ? 0.0F : home.pitch();
         player.teleportTo(target, pos.getX() + 0.5D, pos.getY(), pos.getZ() + 0.5D,
-                EnumSet.noneOf(RelativeMovement.class), home.yaw(), home.pitch());
+                EnumSet.noneOf(RelativeMovement.class), yaw, pitch);
+        LOGGER.info("[trial_portal] 送回 {} @ {} {}", home == null ? "世界出生点（没有回返记录）" : home.dimension().location(),
+                pos.toShortString(), player.getScoreboardName());
+        releaseCell(arena, uuid);
     }
 
     /** 拆掉这个玩家占的隔间（大厅永不拆）。cell 记录会被清掉。 */
@@ -168,6 +174,16 @@ public final class ArenaService
         {
             return;
         }
+        releaseCellAt(arena, cell);
+    }
+
+    /** 拆掉指定编号隔间的平台并释放被强制加载的区块（大厅编号 0 永不拆）。 */
+    public static void releaseCellAt(ServerLevel arena, int cell)
+    {
+        if (cell == LOBBY_CELL)
+        {
+            return;
+        }
         clearPlatform(arena, cellOrigin(cell));
     }
 
@@ -179,8 +195,11 @@ public final class ArenaService
 
     // ------------------------------------------------------------------ 建场
 
-    /** @param lobby true = 大厅（三个模式门 + 出口），false = 隔间（该模式的终端 + 出口） */
-    public static void buildPlatform(ServerLevel level, BlockPos origin, boolean lobby)
+    /**
+     * @param mode null = 大厅（摆三个模式终端 + 出口）；否则 = 隔间（摆该模式的终端 + 出口，
+     *             玩家在里面要靠它继续下一波与结算离场）
+     */
+    public static void buildPlatform(ServerLevel level, BlockPos origin, TrialMode mode)
     {
         forceChunks(level, origin);
         BlockState floor = platformBlock();
@@ -202,12 +221,17 @@ public final class ArenaService
                 }
             }
         }
-        if (lobby)
+        if (mode == null)
         {
             placeTerminal(level, origin.offset(-4, 1, 0), ModBlocks.CHALLENGE_PORTAL.get().defaultBlockState());
             placeTerminal(level, origin.offset(0, 1, -4), ModBlocks.TOWER_PORTAL.get().defaultBlockState());
             placeTerminal(level, origin.offset(4, 1, 0), ModBlocks.TRIAL_PORTAL.get().defaultBlockState());
             placeTerminal(level, origin.offset(0, 1, 4), ModBlocks.ARENA_EXIT.get().defaultBlockState());
+        }
+        else
+        {
+            placeTerminal(level, origin.offset(0, 1, -3), blockFor(mode));
+            placeTerminal(level, origin.offset(0, 1, 3), ModBlocks.ARENA_EXIT.get().defaultBlockState());
         }
     }
 
@@ -275,6 +299,16 @@ public final class ArenaService
     }
 
     // ------------------------------------------------------------------ 查询
+
+    private static BlockState blockFor(TrialMode mode)
+    {
+        return switch (mode)
+        {
+            case CHALLENGE -> ModBlocks.CHALLENGE_PORTAL.get().defaultBlockState();
+            case TOWER -> ModBlocks.TOWER_PORTAL.get().defaultBlockState();
+            case TRIAL -> ModBlocks.TRIAL_PORTAL.get().defaultBlockState();
+        };
+    }
 
     public static boolean isInArena(ServerPlayer player)
     {

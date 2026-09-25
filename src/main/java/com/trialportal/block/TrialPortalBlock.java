@@ -68,6 +68,8 @@ public class TrialPortalBlock extends BaseEntityBlock implements SneakInteractBl
         {
             return InteractionResult.PASS;
         }
+        com.trialportal.TrialPortal.LOGGER.debug("[trial_portal] 右键 {} @ {} 维度 {} 潜行={}",
+                pos.toShortString(), describe(state), level.dimension().location(), player.isShiftKeyDown());
         TrialManager manager = TrialManager.get(level.getServer());
         TrialSession session = manager.sessionOf(player.getUUID());
         boolean sneaking = player.isShiftKeyDown();
@@ -103,6 +105,11 @@ public class TrialPortalBlock extends BaseEntityBlock implements SneakInteractBl
         }
         com.trialportal.arena.ArenaService.beginSession(serverPlayer, definition);
         return InteractionResult.CONSUME;
+    }
+
+    private static String describe(BlockState state)
+    {
+        return net.minecraftforge.registries.ForgeRegistries.BLOCKS.getKey(state.getBlock()).toString();
     }
 
     @Nullable

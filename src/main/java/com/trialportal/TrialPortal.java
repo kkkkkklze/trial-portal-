@@ -31,7 +31,7 @@ public class TrialPortal
 {
     public static final String MODID = "trial_portal";
 
-    private static final Logger LOGGER = LogUtils.getLogger();
+    public static final Logger LOGGER = LogUtils.getLogger();
 
     public TrialPortal()
     {
