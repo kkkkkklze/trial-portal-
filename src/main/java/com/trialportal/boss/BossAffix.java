@@ -144,7 +144,8 @@ public class BossAffix
         return false;
     }
 
-    private static boolean matchesImmunity(String key, DamageSource source)
+    /** 供 BossAffixRuntime 复用：免疫简写（all/projectile/fire/explosion/fall/magic/melee）或直接伤害类型 ID。 */
+    public static boolean matchesImmunity(String key, DamageSource source)
     {
         switch (key.toLowerCase(Locale.ROOT))
         {

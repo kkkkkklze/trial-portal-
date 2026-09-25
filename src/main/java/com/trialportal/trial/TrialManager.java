@@ -1,6 +1,9 @@
 package com.trialportal.trial;
 
 import com.mojang.logging.LogUtils;
+import com.trialportal.boss.BossAffix;
+import com.trialportal.boss.BossAffixLibrary;
+import com.trialportal.boss.PlayerProfile;
 import com.trialportal.config.TrialConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
@@ -478,6 +481,7 @@ public class TrialManager extends SavedData
         if (entry.boss)
         {
             prepareBoss(mob, definition, owner);
+            applyBossAffixes(level, mob, definition, content, owner, session);
         }
         else if (mob instanceof Enemy)
         {
@@ -505,6 +509,46 @@ public class TrialManager extends SavedData
         mob.setCustomName(Component.literal(name));
         mob.setCustomNameVisible(true);
         mob.setTarget(owner);
+    }
+
+    /**
+     * 用开局瞬间采集的玩家画像去筛词条池，命中的按权重抽样后贴到 BOSS 身上。
+     * 池的优先级：本波算出来的（层段专用 → scaling 通用）&gt; boss.affix_pool &gt; 全部已加载词条。
+     */
+    private void applyBossAffixes(ServerLevel level, Mob mob, TrialDefinition definition,
+                                  TrialDefinition.WaveContent content, ServerPlayer owner, TrialSession session)
+    {
+        List<String> pool = content.affixPool;
+        int count = TrialConfig.TRIAL_BOSS_AFFIX_COUNT.get();
+        if (definition.boss != null)
+        {
+            if (pool == null)
+            {
+                pool = definition.boss.affixPool;
+            }
+            if (definition.boss.affixCount > 0)
+            {
+                count = definition.boss.affixCount;
+            }
+        }
+        if (count <= 0)
+        {
+            return;
+        }
+        List<BossAffix> picked = BossAffixLibrary.sample(pool, PlayerProfile.of(owner), count,
+                TrialConfig.TRIAL_AFFIX_WEIGHT_EXPONENT.get(), level.getRandom());
+        if (picked.isEmpty())
+        {
+            LOGGER.warn("[trial_portal] 玩家 {} 的画像没命中任何词条，BOSS 保持原样", owner.getScoreboardName());
+            return;
+        }
+        BossAffixLibrary.applyTo(mob, picked);
+        BossAffixLibrary.decorate(mob, picked);
+        for (BossAffix affix : picked)
+        {
+            session.bossAffixes.add(affix.displayNameOrDefault());
+        }
+        TrialFeedback.chat(owner, "[试炼] BOSS 克制词条：" + String.join("、", session.bossAffixes));
     }
 
     private static void applyNbt(Mob mob, String snbt)
