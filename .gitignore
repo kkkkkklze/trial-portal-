@@ -24,3 +24,6 @@ runs
 run-data
 
 repo
+
+# 本地跑门留下的日志（./gradlew build 与 runGameTestServer -PselfTest 都可重生成）
+verify-logs/
