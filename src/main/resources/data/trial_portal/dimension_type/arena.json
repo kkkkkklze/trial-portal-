@@ -1,0 +1,20 @@
+{
+  "comment": "试炼场地维度：虚空，无自然生成、无突袭、固定亮度",
+  "ultrawarm": false,
+  "natural": false,
+  "has_ceiling": false,
+  "has_skylight": false,
+  "coordinate_scale": 1.0,
+  "bed_works": false,
+  "respawn_anchor_works": false,
+  "min_y": 0,
+  "height": 128,
+  "logical_height": 128,
+  "infiniburn": "#minecraft:infiniburn_overworld",
+  "effects": "minecraft:the_end",
+  "ambient_light": 0.15,
+  "has_raids": false,
+  "piglin_safe": false,
+  "monster_spawn_light_level": 0,
+  "monster_spawn_block_light_limit": 0
+}

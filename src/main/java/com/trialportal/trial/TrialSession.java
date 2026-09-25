@@ -31,6 +31,8 @@ public class TrialSession
     public final String definitionId;
     public final ResourceKey<Level> dimension;
     public final BlockPos origin;
+    /** 场地隔间编号（0 = 大厅）。生成中心与回返判定都以 origin 为准，cell 只用于拆台与找回隔间。 */
+    public int cell;
 
     /** 已完成波数 = 当前波下标（0 起）。爬塔时它等价于「已通过的层数」。 */
     public int waveIndex;

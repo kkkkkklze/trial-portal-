@@ -11,7 +11,6 @@ public final class TrialConfig
     public static final ForgeConfigSpec SPEC;
 
     public static final ForgeConfigSpec.BooleanValue CHALLENGE_DEATH_CLEARS_PENDING;
-    public static final ForgeConfigSpec.BooleanValue CHALLENGE_REWARD_TO_INVENTORY;
 
     public static final ForgeConfigSpec.BooleanValue TOWER_KEEP_RECORD_ON_DEATH;
     public static final ForgeConfigSpec.BooleanValue TOWER_DEATH_CLEARS_PENDING;
@@ -29,6 +28,12 @@ public final class TrialConfig
     public static final ForgeConfigSpec.IntValue GENERAL_TICK_INTERVAL;
     public static final ForgeConfigSpec.IntValue GENERAL_MAX_SPAWNS_PER_WAVE;
     public static final ForgeConfigSpec.IntValue GENERAL_MAX_ALIVE_MOBS;
+    public static final ForgeConfigSpec.BooleanValue GENERAL_REWARD_TO_INVENTORY;
+
+    public static final ForgeConfigSpec.IntValue ARENA_CELL_SPACING;
+    public static final ForgeConfigSpec.IntValue ARENA_PLATFORM_RADIUS;
+    public static final ForgeConfigSpec.ConfigValue<String> ARENA_PLATFORM_BLOCK;
+    public static final ForgeConfigSpec.BooleanValue ARENA_CLEAR_CELL_ON_END;
 
     static
     {
@@ -36,9 +41,6 @@ public final class TrialConfig
         CHALLENGE_DEATH_CLEARS_PENDING = BUILDER
                 .comment("闯关死亡是否清空累计奖励")
                 .define("death_clears_pending", true);
-        CHALLENGE_REWARD_TO_INVENTORY = BUILDER
-                .comment("结算时奖励进背包；false 则掉在脚下")
-                .define("reward_to_inventory", true);
         BUILDER.pop();
 
         BUILDER.push("tower");
@@ -90,6 +92,24 @@ public final class TrialConfig
         GENERAL_MAX_ALIVE_MOBS = BUILDER
                 .comment("单会话同时存在怪物上限；超出部分同样直接丢弃")
                 .defineInRange("max_alive_mobs", 80, 1, 512);
+        GENERAL_REWARD_TO_INVENTORY = BUILDER
+                .comment("结算时奖励进背包；false 则掉在脚下。三种玩法共用这一个开关")
+                .define("reward_to_inventory", true);
+        BUILDER.pop();
+
+        BUILDER.push("arena");
+        ARENA_CELL_SPACING = BUILDER
+                .comment("每个玩家隔间沿 X 轴的间隔（格）。要大于两倍的 platform_radius，否则隔壁间会挨上")
+                .defineInRange("cell_spacing", 160, 32, 4096);
+        ARENA_PLATFORM_RADIUS = BUILDER
+                .comment("平台半径（格），大厅与隔间共用；0 表示只放终端方块周围 1 格")
+                .defineInRange("platform_radius", 10, 1, 48);
+        ARENA_PLATFORM_BLOCK = BUILDER
+                .comment("平台材质（方块 ID）")
+                .define("platform_block", "minecraft:polished_blackstone_bricks");
+        ARENA_CLEAR_CELL_ON_END = BUILDER
+                .comment("会话结束时是否拆掉那个隔间的平台（大厅永远保留）")
+                .define("clear_cell_on_end", true);
         BUILDER.pop();
 
         SPEC = BUILDER.build();

@@ -276,6 +276,40 @@ tasks.named('build') {
     dependsOn checkTrialData
 }
 
+// ---------------------------------------------------------------------------
+// 自测标记：runGameTestServer 在服务端注册表加载失败时仍然退 0，
+// 所以「门绿」必须由 build/selftest 标记文件来背书，而不是退出码。
+// ---------------------------------------------------------------------------
+var selfTestMarker = file('run/selftest-result.txt')
+var clearSelfTestMarker = tasks.register("clearSelfTestMarker") {
+    doFirst {
+        selfTestMarker.delete()
+    }
+}
+var checkSelfTestMarker = tasks.register("checkSelfTestMarker") {
+    mustRunAfter 'runGameTestServer'
+    doLast {
+        if (!selfTestMarker.exists()) {
+            throw new GradleException('自测一条都没跑：' + selfTestMarker + ' 不存在。'
+                    + '多半是服务端在注册表/数据包阶段就崩了（runGameTestServer 的退出码不会反映这件事），看 run/logs/latest.log。')
+        }
+        def text = selfTestMarker.text.trim()
+        if (!text.contains('FAIL=0')) {
+            throw new GradleException('自测未通过：' + text)
+        }
+        logger.lifecycle('[selfTest] ' + text)
+    }
+}
+tasks.named('runGameTestServer') {
+    dependsOn clearSelfTestMarker
+}
+tasks.register('selfTest') {
+    group = 'verification'
+    description = '跑带模组的服务端并强制校验自测标记（PASS/FAIL），退出码不算证据'
+    dependsOn 'runGameTestServer', checkSelfTestMarker
+}
+
+
 // IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.
 idea {
     module {

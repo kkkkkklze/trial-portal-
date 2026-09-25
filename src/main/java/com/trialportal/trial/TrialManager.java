@@ -137,7 +137,7 @@ public class TrialManager extends SavedData
      * @param origin 生成中心与放弃判定中心
      * @return false 表示没开成（已有一场 / 取不到波次内容），原因已通过 feedback 告知
      */
-    public boolean start(ServerPlayer player, TrialDefinition definition, BlockPos origin)
+    public boolean start(ServerPlayer player, TrialDefinition definition, BlockPos origin, int cell)
     {
         if (this.sessions.containsKey(player.getUUID()))
         {
@@ -146,6 +146,7 @@ public class TrialManager extends SavedData
         }
         TrialSession session = new TrialSession(player.getUUID(), player.getScoreboardName(), definition.id(),
                 player.level().dimension(), origin);
+        session.cell = cell;
 
         if (definition.isEndless())
         {
@@ -229,6 +230,7 @@ public class TrialManager extends SavedData
         session.pending.clear();
         clearMobs(player.server.getLevel(session.dimension), session);
         TrialFeedback.chat(player, "[试炼] 已中止，未发放奖励");
+        com.trialportal.arena.ArenaService.returnHome(player);
     }
 
     public void onPlayerDeath(ServerPlayer player)
@@ -266,6 +268,9 @@ public class TrialManager extends SavedData
         TrialFeedback.announce(player, "试炼失败",
                 clearsPending ? "累计奖励已清空" : "累计奖励留到下一场",
                 "[试炼] 你死了 · " + definition.displayName);
+        // 死亡由原版重生流程送玩家回去，这里只拆隔间、清 cell 记录
+        com.trialportal.arena.ArenaService.releaseCell(
+                com.trialportal.arena.ArenaService.level(player.server), player.getUUID());
     }
 
     private void onTowerDeath(ServerPlayer player, TrialSession session)
@@ -310,9 +315,10 @@ public class TrialManager extends SavedData
         ServerPlayer player = server.getPlayerList().getPlayer(session.playerId);
         if (player == null)
         {
-            // 掉线：只做清怪 + 丢会话，不走结算流程（不发奖也不提示）
+            // 掉线：只做清怪 + 丢会话 + 拆隔间，不走结算流程（不发奖也不提示）
             clearMobs(server.getLevel(session.dimension), session);
             this.sessions.remove(session.playerId);
+            com.trialportal.arena.ArenaService.releaseCell(com.trialportal.arena.ArenaService.level(server), session.playerId);
             return;
         }
         TrialDefinition definition = TrialLibrary.get(session.definitionId);
@@ -679,6 +685,10 @@ public class TrialManager extends SavedData
     {
         this.sessions.remove(session.playerId);
         ServerLevel level = player.server.getLevel(session.dimension);
+        if (outcome == Outcome.SETTLED && definition != null && definition.isEndless())
+        {
+            recordFloor(player.getUUID(), session.waveNumber());
+        }
         if (outcome == Outcome.SETTLED)
         {
             grantRewards(player, session);
@@ -693,6 +703,7 @@ public class TrialManager extends SavedData
             session.pending.clear();
         }
         clearMobs(level, session);
+        com.trialportal.arena.ArenaService.returnHome(player);
     }
 
     private void grantRewards(ServerPlayer player, TrialSession session)
@@ -702,7 +713,7 @@ public class TrialManager extends SavedData
             TrialFeedback.chat(player, "[试炼] 结算完成（本场没有累计奖励）");
             return;
         }
-        boolean toInventory = TrialConfig.CHALLENGE_REWARD_TO_INVENTORY.get();
+        boolean toInventory = TrialConfig.GENERAL_REWARD_TO_INVENTORY.get();
         int granted = 0;
         for (TrialDefinition.RewardEntry reward : session.pending)
         {

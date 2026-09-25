@@ -2,5 +2,6 @@
   "block.trial_portal.challenge_portal": "星罗·闯关传送门",
   "block.trial_portal.tower_portal": "星罗·爬塔传送门",
   "block.trial_portal.trial_portal": "星罗·试炼传送门",
-  "itemGroup.trial_portal.main": "传送门试炼"
+  "itemGroup.trial_portal.main": "传送门试炼",
+  "block.trial_portal.arena_exit": "返回野外终端"
 }

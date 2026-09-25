@@ -1,6 +1,7 @@
 package com.trialportal.registry;
 
 import com.trialportal.TrialPortal;
+import com.trialportal.block.ArenaExitBlock;
 import com.trialportal.block.TrialPortalBlock;
 import com.trialportal.trial.TrialMode;
 import net.minecraft.world.level.block.Block;
@@ -25,6 +26,14 @@ public final class ModBlocks
 
     public static final RegistryObject<TrialPortalBlock> TRIAL_PORTAL =
             BLOCKS.register("trial_portal", () -> new TrialPortalBlock(TrialMode.TRIAL, properties(MapColor.COLOR_BLUE)));
+
+    /** 场地里的「返回野外」终端：不可破坏、无掉落，只由 ArenaService 程序化放置。 */
+    public static final RegistryObject<ArenaExitBlock> ARENA_EXIT =
+            BLOCKS.register("arena_exit", () -> new ArenaExitBlock(BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.COLOR_BLACK)
+                    .strength(-1.0F, 3600000.0F)
+                    .lightLevel(state -> 4)
+                    .noOcclusion()));
 
     private static BlockBehaviour.Properties properties(MapColor color)
     {

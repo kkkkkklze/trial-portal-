@@ -6,7 +6,9 @@ import com.trialportal.boss.BossAffixLibrary;
 import com.trialportal.config.TrialConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.Level;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.server.MinecraftServer;
@@ -40,6 +42,9 @@ public final class TrialSelfTest
 
     private static final Logger LOGGER = org.slf4j.LoggerFactory.getLogger("trial_portal.selftest");
 
+    /** 跑过多少条断言：写进标记文件，防止「一条没跑」被当成全绿。 */
+    private static int assertions;
+
     private TrialSelfTest() {}
 
     @SubscribeEvent
@@ -50,9 +55,22 @@ public final class TrialSelfTest
             return;
         }
         List<String> failures = run(event.getServer());
+        int passed = assertions - failures.size();
+        // 落一个标记文件：runGameTestServer 即使服务端在注册表阶段崩掉也会退 0，
+        // 光看退出码会把「一条断言都没跑」当成全绿，所以门必须验这个文件（见 build.gradle 的 selfTest 任务）。
+        try
+        {
+            java.nio.file.Path marker = event.getServer().getServerDirectory().toPath().resolve("selftest-result.txt");
+            java.nio.file.Files.writeString(marker, "PASS=" + passed + " FAIL=" + failures.size()
+                    + " at=" + java.time.Instant.now() + System.lineSeparator());
+        }
+        catch (java.io.IOException exception)
+        {
+            LOGGER.warn("[selftest] 标记文件写不出去：{}", exception.getMessage());
+        }
         if (failures.isEmpty())
         {
-            LOGGER.info("[selftest] 全部断言通过");
+            LOGGER.info("[selftest] 全部 {} 条断言通过", passed);
             return;
         }
         failures.forEach(failure -> LOGGER.error("[selftest] 失败：{}", failure));
@@ -98,12 +116,40 @@ public final class TrialSelfTest
         // 注册面：三个方块 / 三个物品 / 方块实体类型 / 创造栏都要真的进注册表
         for (String name : List.of("challenge_portal", "tower_portal", "trial_portal"))
         {
-            ResourceLocation key = new ResourceLocation(TrialPortal.MODID, name);
+            ResourceLocation key = ResourceLocation.fromNamespaceAndPath(TrialPortal.MODID, name);
             check(failures, net.minecraftforge.registries.ForgeRegistries.BLOCKS.getValue(key) != null,
                     "方块 " + key + " 已注册");
             check(failures, net.minecraftforge.registries.ForgeRegistries.ITEMS.getValue(key) != null,
                     "物品 " + key + " 已注册");
         }
+        // 场地维度与平台生成
+        ResourceKey<Level> arenaKey = com.trialportal.arena.ArenaService.ARENA;
+        check(failures, server.getLevel(arenaKey) != null, "试炼场地维度 " + arenaKey.location() + " 已加载");
+        check(failures, net.minecraftforge.registries.ForgeRegistries.BLOCKS.getValue(
+                        ResourceLocation.fromNamespaceAndPath(TrialPortal.MODID, "arena_exit")) != null,
+                "返回终端方块已注册");
+        int radius = com.trialportal.arena.ArenaService.radius();
+        int spacing = TrialConfig.ARENA_CELL_SPACING.get();
+        check(failures, spacing >= radius * 2 + 8,
+                "隔间间隔 " + spacing + " 应不小于两倍平台半径再加边距（" + (radius * 2 + 8) + "），否则隔壁间会挨上");
+        var arenaLevel = server.getLevel(arenaKey);
+        if (arenaLevel != null)
+        {
+            BlockPos lobby = com.trialportal.arena.ArenaService.cellOrigin(com.trialportal.arena.ArenaService.LOBBY_CELL);
+            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, lobby, true);
+            int first = countPlatformBlocks(arenaLevel, lobby, radius);
+            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, lobby, true);
+            int second = countPlatformBlocks(arenaLevel, lobby, radius);
+            check(failures, first > 0 && first == second,
+                    "平台生成必须幂等：第一次 " + first + " 块，第二次 " + second + " 块");
+            check(failures, arenaLevel.getBlockState(lobby.offset(-4, 1, 0)).getBlock()
+                            instanceof com.trialportal.block.TrialPortalBlock,
+                    "大厅应摆出闯关终端");
+            check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, 4)).getBlock()
+                            instanceof com.trialportal.block.ArenaExitBlock,
+                    "大厅应摆出返回终端");
+        }
+
         // 直接执行一遍 /tei trial list：比查指令树里有没有这个名字更硬
         try
         {
@@ -218,6 +264,7 @@ public final class TrialSelfTest
 
     private static void check(List<String> failures, boolean condition, String message)
     {
+        assertions++;
         if (condition)
         {
             LOGGER.info("[selftest] PASS {}", message);
@@ -226,6 +273,22 @@ public final class TrialSelfTest
         {
             failures.add(message);
         }
+    }
+
+    private static int countPlatformBlocks(ServerLevel level, BlockPos origin, int radius)
+    {
+        int count = 0;
+        for (int dx = -radius; dx <= radius; dx++)
+        {
+            for (int dz = -radius; dz <= radius; dz++)
+            {
+                if (!level.getBlockState(origin.offset(dx, 0, dz)).isAir())
+                {
+                    count++;
+                }
+            }
+        }
+        return count;
     }
 
     /** 属性基础值（1.20.1 的 LivingEntity 上没有这个便利方法，测试里自己取一次）。 */

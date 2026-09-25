@@ -51,7 +51,11 @@ public final class TrialCommand
                                 .then(Commands.argument("floor", IntegerArgumentType.integer(0))
                                         .executes(TrialCommand::setFloor)))
                         .then(Commands.literal("profile").executes(TrialCommand::profile))
-                        .then(Commands.literal("affixes").executes(TrialCommand::affixes))));
+                        .then(Commands.literal("affixes").executes(TrialCommand::affixes))
+                        .then(Commands.literal("enter").executes(TrialCommand::enter))
+                        .then(Commands.literal("home").executes(TrialCommand::home)))
+                .then(Commands.literal("arena")
+                        .then(Commands.literal("info").executes(TrialCommand::arenaInfo))));
     }
 
     private static int list(CommandContext<CommandSourceStack> context)
@@ -84,8 +88,8 @@ public final class TrialCommand
             context.getSource().sendFailure(Component.literal("找不到试炼 " + id + "（指令要求写全命名空间，如 trial_portal:challenge）"));
             return 0;
         }
-        // 生成中心 = 玩家脚下，所以 abandon_distance 的判定中心也跟着走
-        return TrialManager.get(context.getSource().getServer()).start(player, definition, player.blockPosition()) ? 1 : 0;
+        // 指令开局与大厅点门等价：分配隔间、建平台、把玩家送进去
+        return com.trialportal.arena.ArenaService.beginSession(player, definition) ? 1 : 0;
     }
 
     private static int stop(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
@@ -112,7 +116,10 @@ public final class TrialCommand
         context.getSource().sendSuccess(() -> Component.literal(
                 session.definitionId + "（" + modeKey + "） · " + session.describe(mode))
                 .withStyle(ChatFormatting.AQUA), false);
-        context.getSource().sendSuccess(() -> Component.literal("爬塔记录层数：" + floor).withStyle(ChatFormatting.GRAY), false);
+        context.getSource().sendSuccess(() -> Component.literal("爬塔记录层数：" + floor
+                + " · 场地隔间 " + session.cell
+                + (com.trialportal.arena.ArenaService.isArena(session.dimension) ? "（在试炼场地维度）" : "（就地，旧会话）"))
+                .withStyle(ChatFormatting.GRAY), false);
         if (!session.bossAffixes.isEmpty())
         {
             context.getSource().sendSuccess(() -> Component.literal("BOSS 词条：" + String.join("、", session.bossAffixes))
@@ -163,6 +170,39 @@ public final class TrialCommand
         TrialManager.get(context.getSource().getServer()).setRecordedFloor(player.getUUID(), floor);
         context.getSource().sendSuccess(() -> Component.literal("爬塔记录已设为 " + floor + " 层").withStyle(ChatFormatting.GREEN), true);
         return 1;
+    }
+
+    private static int enter(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        return com.trialportal.arena.ArenaService.enterLobby(context.getSource().getPlayerOrException()) ? 1 : 0;
+    }
+
+    private static int home(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        if (context.getSource().getServer() != null
+                && TrialManager.get(context.getSource().getServer()).hasSession(player.getUUID()))
+        {
+            context.getSource().sendFailure(Component.literal("还有进行中的试炼：先用潜行右键结算，或用 /tei trial stop 中止"));
+            return 0;
+        }
+        com.trialportal.arena.ArenaService.returnHome(player);
+        return 1;
+    }
+
+    private static int arenaInfo(CommandContext<CommandSourceStack> context)
+    {
+        var server = context.getSource().getServer();
+        var arena = com.trialportal.arena.ArenaService.level(server);
+        int radius = com.trialportal.arena.ArenaService.radius();
+        context.getSource().sendSuccess(() -> Component.literal(
+                "场地维度 " + com.trialportal.arena.ArenaService.ARENA.location()
+                        + (arena == null ? "：未加载" : "：已加载")
+                        + " · 平台半径 " + radius
+                        + " · 隔间间隔 " + com.trialportal.config.TrialConfig.ARENA_CELL_SPACING.get()
+                        + " · 占用中的隔间 " + com.trialportal.arena.ArenaService.usedCellCount())
+                .withStyle(arena == null ? ChatFormatting.RED : ChatFormatting.AQUA), false);
+        return arena == null ? 0 : 1;
     }
 
     private static int profile(CommandContext<CommandSourceStack> context) throws CommandSyntaxException

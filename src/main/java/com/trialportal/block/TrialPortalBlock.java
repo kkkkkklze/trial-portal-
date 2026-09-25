@@ -71,8 +71,22 @@ public class TrialPortalBlock extends BaseEntityBlock implements SneakInteractBl
         TrialManager manager = TrialManager.get(level.getServer());
         TrialSession session = manager.sessionOf(player.getUUID());
         boolean sneaking = player.isShiftKeyDown();
+
+        if (!com.trialportal.arena.ArenaService.isArena(level.dimension()))
+        {
+            // 野外只有一件事：进大厅。就地开一场的旧分支已删除——场地契约只留一条路径。
+            com.trialportal.arena.ArenaService.enterLobby(serverPlayer);
+            return InteractionResult.CONSUME;
+        }
+
         if (session != null)
         {
+            TrialDefinition own = TrialLibrary.get(session.definitionId);
+            if (own != null && own.mode != this.mode)
+            {
+                TrialFeedback.failure(serverPlayer, "你当前那一场是「" + own.displayName + "」，先用对应的门结算");
+                return InteractionResult.CONSUME;
+            }
             manager.onPortalUse(serverPlayer, sneaking);
             return InteractionResult.CONSUME;
         }
@@ -87,7 +101,7 @@ public class TrialPortalBlock extends BaseEntityBlock implements SneakInteractBl
             TrialFeedback.failure(serverPlayer, "这个传送门没有可用的试炼定义（mode=" + this.mode.jsonKey() + "）");
             return InteractionResult.CONSUME;
         }
-        manager.start(serverPlayer, definition, pos);
+        com.trialportal.arena.ArenaService.beginSession(serverPlayer, definition);
         return InteractionResult.CONSUME;
     }
 
