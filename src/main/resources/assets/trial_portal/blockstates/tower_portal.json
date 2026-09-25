@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "trial_portal:block/tower_portal"
+    }
+  }
+}
