@@ -1,6 +1,8 @@
 # Trial Portal（传送门试炼）
 
-Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼（闯关 / 爬塔 / 试炼三种玩法共用一套框架）。
+Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼（闯关 / 爬塔 / 试炼共用一套框架）。
+三种玩法都跑在自建维度 `trial_portal:arena` 里：右键野外任意一个传送门 → 传进大厅平台 → 点大厅里的对应终端选玩法 →
+在**属于你自己的隔间**里打；结算/放弃/中止会把你送回进入前的位置。
 玩法语义规格来自原作者提供的设计文档（收录在 `docs/`），本机事实、验证结果与差异台账见 [docs/开发文档.md](docs/开发文档.md)。
 内容全在数据包 JSON 里：改出什么怪、给什么奖励、BOSS 克制什么都不用重新编译。
 
@@ -34,6 +36,7 @@ Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼�
 
 | 命令 | 结果 |
 | --- | --- |
+| `./gradlew selfTest -PselfTest` | 绿，**43 条断言全过**；这道门不认退出码，只认 `run/selftest-result.txt` 里的 `PASS/FAIL` |
 | `./gradlew build` | 绿。含 `> Task :checkTrialData`（8 条词条 + 3 份试炼全通过）。产物 `build/libs/trial_portal-1.0.0.jar`（106 KB，38 个 class） |
 | `./gradlew checkTrialData` | 绿；两次反向测试（写坏 JSON）都以非 0 退出并点名条目 |
 | `./gradlew runGameTestServer -PselfTest` | 绿，**32 条运行期断言全通过**（数据包链路、BOSS 层取 mobs[0]、层段词条池生效、免疫真的取消伤害、属性修饰符随实体存档、NBT 往返一致、方块/物品注册、`/tei trial list` 真执行） |
@@ -81,10 +84,13 @@ trial-portal-1.20.1/
     │   ├── block/  block/entity/     # TrialPortalBlock + SneakInteractBlock + 方块实体
     │   ├── trial/                    # 定义模型 / 库 / 会话 / 状态机 / 事件 / 播报 / 自测
     │   ├── boss/                     # 词条模型 / 库 / 运行期生效点 / 玩家画像
-    │   ├── command/  config/  data/  # /tei 指令树 / 16 项 TOML / 通用 JSON 重载监听器
+    │   ├── arena/ArenaService.java   # 大厅与隔间：建台/拆台/cell 分配/进出与回返
+    │   ├── command/  config/  data/  # /tei 指令树 / 20 项 TOML / 通用 JSON 重载监听器
     ├── main/resources/
     │   ├── assets/trial_portal/      # 方块状态、模型（复用原版贴图）、中英文 lang
     │   └── data/trial_portal/
+    │       ├── dimension_type/arena.json   # 虚空场地
+    │       ├── dimension/arena.json        # flat 生成器，零方块层
     │       ├── trials/               # 3 份试炼定义（challenge / tower / trial）
     │       ├── boss_affixes/         # 8 条 BOSS 词条
     │       └── loot_tables/blocks/   # 三个方块掉自己
