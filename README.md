@@ -60,36 +60,38 @@ Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼�
 **加载验证只认 `runGameTestServer`**：`runData` 虽然也会绿，但 datagen 只跑到注册阶段，
 **不执行模组构造函数**（`DatagenModLoader#begin()` 只调 `gatherAndInitializeMods` + `GatherDataEvent`），
 拿它当「模组能加载」的证据会骗人。细节见 `docs/开发文档.md` §3。
-设计文档里的 `checkTrialData` 任务本机**还不存在**，它属于试炼内容实现的一部分。
 
 ## 目录结构（当前实际）
 
 ```
 trial-portal-1.20.1/
-├── build.gradle              # MDG Legacy 工具链、国内镜像仓库、run 配置、generateModMetadata
-├── gradle.properties         # 版本 + 模组元数据（mod_id / mod_name / 作者 / 描述都在这改）
+├── build.gradle              # MDG Legacy 工具链、镜像仓库、run 配置（含 -PselfTest 开关）、generateModMetadata
+├── gradle.properties         # 版本 + 模组元数据（mod_id / mod_name / 作者 / 描述都在这改，保持 ASCII）
 ├── settings.gradle           # 插件仓库（镜像）+ foojay 工具链解析
 ├── gradle/wrapper/
 ├── docs/
-│   ├── 开发文档.md            # 本机实况、差异台账、实现状态、待办
-│   ├── 设计文档-*.md          # 原作者提供的三份文档，原样收录
-│   └── 设计文档-传送门试炼配置指南（原作者）.md   # JSON 字段表 / TOML / 指令 / 克制关系
+│   ├── 开发文档.md            # 本机实况、差异台账、逐包状态、待办
+│   └── 设计文档-*.md          # 原作者提供的三份（README / 配置指南 / 现状与注意事项），原样收录
 ├── verify-logs/               # 跑门留下的日志（已 gitignore，可重生成）
 └── src/
     ├── main/java/com/trialportal/
-    │   ├── TrialPortal.java          # 主类（注册入口，内容待实现）
-    │   └── registry/                 # ModBlocks / ModItems 的 DeferredRegister
+    │   ├── TrialPortal.java          # 主类：注册、数据包监听、/tei 挂载、潜行右键放行
+    │   ├── registry/                 # ModBlocks / ModItems / ModBlockEntities / ModCreativeTabs
+    │   ├── block/  block/entity/     # TrialPortalBlock + SneakInteractBlock + 方块实体
+    │   ├── trial/                    # 定义模型 / 库 / 会话 / 状态机 / 事件 / 播报 / 自测
+    │   ├── boss/                     # 词条模型 / 库 / 运行期生效点 / 玩家画像
+    │   ├── command/  config/  data/  # /tei 指令树 / 16 项 TOML / 通用 JSON 重载监听器
     ├── main/resources/
     │   ├── assets/trial_portal/      # 方块状态、模型（复用原版贴图）、中英文 lang
     │   └── data/trial_portal/
     │       ├── trials/               # 3 份试炼定义（challenge / tower / trial）
     │       ├── boss_affixes/         # 8 条 BOSS 词条
     │       └── loot_tables/blocks/   # 三个方块掉自己
-├── src/tools/java/            # checkTrialData 的校验程序，不打进 jar
     ├── main/templates/
     │   ├── META-INF/mods.toml        # 元数据模板，构建时由 generateModMetadata 展开占位符
     │   └── pack.mcmeta
-    └── generated/resources/          # runData 输出，已在 build.gradle 注册为资源目录，勿手改
+    ├── generated/resources/          # runData 输出，已在 build.gradle 注册为资源目录，勿手改
+    └── tools/java/                   # TrialDataCheck：checkTrialData 的校验程序，不打进 jar
 ```
 
 ## 加内容时的入口
