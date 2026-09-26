@@ -12,6 +12,7 @@ import net.minecraft.world.phys.BlockHitResult;
 
 /**
  * 场地里的「返回野外」终端：不可破坏、无掉落，只由 ArenaService 程序化放置。
+ * 点它 = 离场并把已攒的奖励结掉（不再是"白走一趟"）。
  */
 public class ArenaExitBlock extends Block
 {
@@ -28,7 +29,7 @@ public class ArenaExitBlock extends Block
         {
             return level.isClientSide ? InteractionResult.SUCCESS : InteractionResult.PASS;
         }
-        ArenaService.returnHome(serverPlayer);
+        com.trialportal.trial.TrialManager.get(level.getServer()).leave(serverPlayer);
         return InteractionResult.CONSUME;
     }
 }

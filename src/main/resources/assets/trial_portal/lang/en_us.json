@@ -3,5 +3,7 @@
   "block.trial_portal.tower_portal": "Tower Portal",
   "block.trial_portal.trial_portal": "Trial Portal",
   "itemGroup.trial_portal.main": "Trial Portal",
-  "block.trial_portal.arena_exit": "Return Terminal"
+  "block.trial_portal.arena_exit": "Return Terminal",
+  "screen.trial_portal.challenge_picker": "Choose a challenge",
+  "screen.trial_portal.challenge_picker_empty": "no challenge definitions in challenges/"
 }

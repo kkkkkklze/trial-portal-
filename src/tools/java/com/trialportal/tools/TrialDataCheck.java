@@ -2,13 +2,21 @@ package com.trialportal.tools;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.annotations.SerializedName;
 import com.trialportal.arena.RoomDefinition;
 import com.trialportal.boss.BossAffix;
+import com.trialportal.trial.ChallengeDefinition;
 import com.trialportal.trial.TrialDefinition;
 import net.minecraft.resources.ResourceLocation;
 
 import java.io.IOException;
 import java.io.Reader;
+import java.lang.reflect.Field;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -33,6 +41,7 @@ public final class TrialDataCheck
     private int checkedTrials;
     private int checkedAffixes;
     private int checkedRooms;
+    private int checkedChallenges;
 
     public static void main(String[] args) throws IOException
     {
@@ -41,9 +50,10 @@ public final class TrialDataCheck
         Map<String, BossAffix> affixes = check.loadAffixes(root.resolve("boss_affixes"));
         check.checkTrials(root.resolve("trials"), affixes);
         check.checkRooms(root.resolve("arena_rooms"));
+        check.checkChallenges(root.resolve("challenges"));
 
-        System.out.printf(Locale.ROOT, "词条：%d 条；试炼：%d 份；房间：%d 间%n",
-                check.checkedAffixes, check.checkedTrials, check.checkedRooms);
+        System.out.printf(Locale.ROOT, "词条：%d 条；试炼：%d 份；房间：%d 间；副本：%d 份%n",
+                check.checkedAffixes, check.checkedTrials, check.checkedRooms, check.checkedChallenges);
         if (check.problems.isEmpty())
         {
             System.out.println("checkTrialData 通过：没有字段缺失、没有失效引用、逐波逐层都能取到内容");
@@ -52,6 +62,54 @@ public final class TrialDataCheck
         System.out.println("checkTrialData 失败，共 " + check.problems.size() + " 处：");
         check.problems.forEach(problem -> System.out.println("  - " + problem));
         System.exit(1);
+    }
+
+    /** 资源副本：三档难度必须齐全，且每档都要有怪、有上限、有补充节奏（杀奖可以为空，表示这档不给奖）。 */
+    private void checkChallenges(Path directory) throws IOException
+    {
+        for (Path file : jsonFiles(directory))
+        {
+            String id = idOf(directory, file);
+            ChallengeDefinition challenge = parse(file, id, ChallengeDefinition.class);
+            if (challenge == null)
+            {
+                continue;
+            }
+            checkedChallenges++;
+            String error;
+            try
+            {
+                error = challenge.resolve(id);
+            }
+            catch (IllegalArgumentException exception)
+            {
+                error = exception.getMessage();
+            }
+            if (error != null)
+            {
+                problems.add(id + "（副本）：" + error);
+                continue;
+            }
+            ChallengeDefinition.Difficulty previous = null;
+            for (String key : ChallengeDefinition.DIFFICULTY_KEYS)
+            {
+                ChallengeDefinition.Difficulty difficulty = challenge.difficulty(key);
+                if (difficulty == null)
+                {
+                    continue; // resolve() 已经报过
+                }
+                if (previous != null && difficulty.mobCap < previous.mobCap)
+                {
+                    problems.add(id + "（副本）：" + key + " 的 mob_cap " + difficulty.mobCap
+                            + " 低于上一档，难度顺序反了");
+                }
+                previous = difficulty;
+            }
+        }
+        if (checkedChallenges == 0)
+        {
+            problems.add("challenges/ 里一份副本都没有，闯关玩法就没内容可选");
+        }
     }
 
     private void checkRooms(Path directory) throws IOException
@@ -222,6 +280,18 @@ public final class TrialDataCheck
             }
             if (definition.scaling != null)
             {
+                if (definition.scaling.maxCountPerEntry < 1)
+                {
+                    // 每层算出 0 只怪 → 波次"立刻清空"并放行下一层，整场白送（ScalingRule.resolve 只钳制不拒绝）
+                    problems.add(id + "（试炼）：scaling.max_count_per_entry=" + definition.scaling.maxCountPerEntry
+                            + "，每层都会算出 0 只怪");
+                }
+                if (definition.scaling.bossEveryFloors > 0
+                        && definition.scaling.tiers.stream().noneMatch(tier -> tier.boss))
+                {
+                    problems.add(id + "（试炼）：设了 boss_every_floors=" + definition.scaling.bossEveryFloors
+                            + "，但没有任何层段标 boss=true，BOSS 波永远不会出现");
+                }
                 definition.scaling.rewards.forEach(reward -> checkIdShape(id, "scaling.reward", reward.item));
                 checkAffixPool(id, "scaling.boss_affix_pool", definition.scaling.bossAffixPool, affixes);
                 for (TrialDefinition.Tier tier : definition.scaling.tiers)
@@ -279,11 +349,13 @@ public final class TrialDataCheck
         }
     }
 
-    private static <T> T parse(Path file, String id, Class<T> type)
+    private <T> T parse(Path file, String id, Class<T> type)
     {
         try (Reader reader = Files.newBufferedReader(file))
         {
-            T model = GSON.fromJson(reader, type);
+            JsonElement json = JsonParser.parseReader(reader);
+            checkKeys(id, json, type);
+            T model = GSON.fromJson(json, type);
             if (model == null)
             {
                 System.out.println("  ! " + id + "：文件内容为空，已跳过");
@@ -295,6 +367,104 @@ public final class TrialDataCheck
             System.out.println("  ! " + id + "：JSON 解析失败 —— " + exception.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 字段白名单。Gson 对"模型类里没有这个字段"是**静默忽略**的：把 `spawn_radius` 写成 `spawn_raduis`
+     * 一样能加载成功，运行期悄悄用默认值——离线门是唯一能把它当错误报出来的地方。
+     * 只递归自家的模型类；Map 字段（词条参数那种开放键）与 JDK 类型不进去。
+     */
+    private void checkKeys(String where, JsonElement json, Class<?> type)
+    {
+        if (json.isJsonObject())
+        {
+            checkObjectKeys(where, json.getAsJsonObject(), type);
+        }
+    }
+
+    private void checkObjectKeys(String where, JsonObject object, Class<?> type)
+    {
+        if (!isModel(type))
+        {
+            return;
+        }
+        for (Map.Entry<String, JsonElement> member : object.entrySet())
+        {
+            Field field = fieldNamed(type, member.getKey());
+            if (field == null)
+            {
+                if (isCommentKey(member.getKey()))
+                {
+                    continue; // JSON 没有注释，内容文件里的 "comment"/"_note" 是写给人看的，加载器与门都该无视它
+                }
+                problems.add(where + " 里有个模型类不认识的字段 \"" + member.getKey()
+                        + "\"——Gson 会静默丢掉它，多半是拼错了");
+                continue;
+            }
+            JsonElement value = member.getValue();
+            if (value.isJsonObject())
+            {
+                checkObjectKeys(where + "." + member.getKey(), value.getAsJsonObject(), field.getType());
+            }
+            else if (value.isJsonArray())
+            {
+                Class<?> element = listItemType(field);
+                int index = 0;
+                for (JsonElement item : value.getAsJsonArray())
+                {
+                    if (item.isJsonObject() && element != null)
+                    {
+                        checkObjectKeys(where + "." + member.getKey() + "[" + index + "]",
+                                item.getAsJsonObject(), element);
+                    }
+                    index++;
+                }
+            }
+        }
+    }
+
+    private static boolean isModel(Class<?> type)
+    {
+        return type != null && type.getName().startsWith("com.trialportal.");
+    }
+
+    private static boolean isCommentKey(String key)
+    {
+        return key.equals("comment") || key.startsWith("_");
+    }
+
+    /** 认字段名，也认 @SerializedName 改过的名字（含父类字段）。 */
+    private static Field fieldNamed(Class<?> type, String key)
+    {
+        for (Class<?> current = type; current != null && isModel(current); current = current.getSuperclass())
+        {
+            for (Field field : current.getDeclaredFields())
+            {
+                if (field.isSynthetic())
+                {
+                    continue; // static 的 GSON 缓存一类不算内容字段
+                }
+                SerializedName named = field.getAnnotation(SerializedName.class);
+                if (key.equals(named != null ? named.value() : field.getName()))
+                {
+                    return field;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** List<X> 里的 X；不是 List 或元素不是自家模型就返回 null。 */
+    private static Class<?> listItemType(Field field)
+    {
+        if (!List.class.isAssignableFrom(field.getType())
+                || !(field.getGenericType() instanceof ParameterizedType parameterized))
+        {
+            return null;
+        }
+        Type argument = parameterized.getActualTypeArguments().length == 0
+                ? null : parameterized.getActualTypeArguments()[0];
+        return argument instanceof Class<?> element && isModel(element) ? element : null;
     }
 
     private static List<Path> jsonFiles(Path directory) throws IOException

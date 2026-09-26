@@ -2,6 +2,7 @@ package com.trialportal.arena;
 
 import com.mojang.logging.LogUtils;
 import com.trialportal.TrialPortal;
+import com.trialportal.block.ArenaExitBlock;
 import com.trialportal.block.TrialPortalBlock;
 import com.trialportal.config.TrialConfig;
 import com.trialportal.registry.ModBlocks;
@@ -18,7 +19,6 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.RelativeMovement;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
@@ -28,7 +28,9 @@ import net.minecraft.world.phys.AABB;
 import net.minecraftforge.registries.ForgeRegistries;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -54,6 +56,11 @@ public final class ArenaService
 
     private static final org.slf4j.Logger LOGGER = LogUtils.getLogger();
 
+    /** 开服清扫排到下一轮的隔间：怪要等实体注入才看得见，强制加载也得等那一刻之后再松手。 */
+    private record PendingRelease(int cell, int reach, UUID playerId) {}
+
+    private static final List<PendingRelease> PENDING_RELEASES = new ArrayList<>();
+
     private ArenaService() {}
 
     @Nullable
@@ -75,6 +82,12 @@ public final class ArenaService
     public static int radius()
     {
         return Math.max(1, TrialConfig.ARENA_PLATFORM_RADIUS.get());
+    }
+
+    /** 围栏高度。至少 2 才关得住会跳 1 格的怪，配置再高也只是玻璃墙。 */
+    public static int fenceHeight()
+    {
+        return Math.max(2, TrialConfig.ARENA_FENCE_HEIGHT.get());
     }
 
     /** 间隔至少要装下两个平台加围栏，否则隔壁间会挨在一起。 */
@@ -116,6 +129,102 @@ public final class ArenaService
         return true;
     }
 
+    /**
+     * 野外那扇门的语义：直连它自己的玩法。已有同模式会话就把自己送回隔间继续，
+     * 不同模式则拒绝（不能一句话把两场并成一场）。
+     */
+    /**
+     * 点某扇门的语义：直连它自己的玩法。已有会话时——同模式=回自己隔间继续，异模式=拒绝
+     * （不能一句话把两场并成一场）。副本没有波次定义，所以 {@code definition} 允许为 null。
+     */
+    public static boolean enterPlay(ServerPlayer player, TrialMode mode, @Nullable TrialDefinition definition)
+    {
+        TrialManager manager = TrialManager.get(player.server);
+        TrialSession session = manager.sessionOf(player.getUUID());
+        if (session == null)
+        {
+            if (mode.isSustained())
+            {
+                // 闯关是「选副本 + 选难度」的玩法，所以点门先弹界面；清单为空才直接报错
+                if (com.trialportal.trial.ChallengeLibrary.ids().isEmpty())
+                {
+                    TrialFeedback.failure(player, "challenges/ 里没有任何副本，闯关玩法没内容");
+                    return false;
+                }
+                com.trialportal.network.TrialNetwork.openPicker(player);
+                return true;
+            }
+            if (definition == null)
+            {
+                TrialFeedback.failure(player, "这个传送门没有可用的试炼定义（mode=" + mode.jsonKey() + "）");
+                return false;
+            }
+            return beginSession(player, definition);
+        }
+        if (modeOf(session) != mode)
+        {
+            TrialDefinition own = TrialLibrary.get(session.definitionId);
+            String name = own == null ? session.challengeId : own.displayName;
+            TrialFeedback.failure(player, "你当前那一场是「" + name + "」，先用返回终端结算再开别的");
+            return false;
+        }
+        ServerLevel arena = level(player.server);
+        if (arena == null)
+        {
+            TrialFeedback.failure(player, "试炼场地维度没加载，无法回到隔间");
+            return false;
+        }
+        buildPlatform(arena, cellOrigin(session.cell), mode);
+        teleportSafe(arena, player, cellOrigin(session.cell), 180.0F, 0.0F);
+        TrialFeedback.chat(player, "[试炼] 已把你的隔间重新铺好，回到上一场继续");
+        return true;
+    }
+
+    private static TrialMode modeOf(TrialSession session)
+    {
+        if (session.challengeId != null)
+        {
+            return TrialMode.CHALLENGE; // 副本会话的内容不在 trials/ 里，按玩法归 CHALLENGE
+        }
+        TrialDefinition definition = TrialLibrary.get(session.definitionId);
+        return definition == null ? null : definition.mode;
+    }
+
+    /**
+     * 开一局资源副本（CHALLENGE 玩法）。与 {@link #beginSession} 同一条隔间链路，
+     * 只是内容来自 {@code challenges/}、玩法循环不计波次。
+     */
+    public static boolean beginDungeon(ServerPlayer player, com.trialportal.trial.ChallengeDefinition challenge,
+                                       String difficultyKey)
+    {
+        ServerLevel arena = level(player.server);
+        if (arena == null)
+        {
+            TrialFeedback.failure(player, "试炼场地维度没加载，无法开局");
+            return false;
+        }
+        TrialManager manager = TrialManager.get(player.server);
+        if (manager.hasSession(player.getUUID()))
+        {
+            // 必须先拒，再谈动世界：界面里连点两下"确认"就会第二次走到这里，
+            // 放行的话下面的 allocateCell 会把他正站着的上一场隔间直接拆掉。
+            TrialFeedback.failure(player, "你已经有一场试炼在进行中，先用返回终端结算");
+            return false;
+        }
+        recordReturnPoint(manager, player);
+        int cell = manager.allocateCell(player.getUUID(), TrialMode.CHALLENGE, arena);
+        BlockPos origin = cellOrigin(cell);
+        buildPlatform(arena, origin, TrialMode.CHALLENGE);
+        sweepCellMobs(arena, cell, manager.reachOf(player.getUUID())); // 兜底：正常清怪在上一场离场那一次
+        if (!manager.startDungeon(player, challenge, difficultyKey, origin, cell, arena.dimension()))
+        {
+            releaseCell(arena, manager, player.getUUID(), cell); // 台已经铺了，只销记账会留下一间没人认领的房
+            return false;
+        }
+        teleportSafe(arena, player, origin, 180.0F, 0.0F);
+        return true;
+    }
+
     /** 大厅里右键某个模式的门 = 在自己的隔间开一场。 */
     public static boolean beginSession(ServerPlayer player, TrialDefinition definition)
     {
@@ -126,12 +235,19 @@ public final class ArenaService
             return false;
         }
         TrialManager manager = TrialManager.get(player.server);
-        int cell = manager.allocateCell(player.getUUID());
+        if (manager.hasSession(player.getUUID()))
+        {
+            TrialFeedback.failure(player, "你已经有一场试炼在进行中，先用返回终端结算");
+            return false;
+        }
+        recordReturnPoint(manager, player);
+        int cell = manager.allocateCell(player.getUUID(), definition.mode, arena);
         BlockPos origin = cellOrigin(cell);
         buildPlatform(arena, origin, definition.mode);
-        if (!manager.start(player, definition, origin, cell))
+        sweepCellMobs(arena, cell, manager.reachOf(player.getUUID())); // 兜底：正常清怪在上一场离场那一次
+        if (!manager.start(player, definition, origin, cell, arena.dimension()))
         {
-            manager.freeCell(player.getUUID());
+            releaseCell(arena, manager, player.getUUID(), cell);
             TrialFeedback.failure(player, "开局失败：见服务端日志（trial_portal）");
             return false;
         }
@@ -168,12 +284,26 @@ public final class ArenaService
     public static void releaseCell(@Nullable ServerLevel arena, TrialManager manager, UUID playerId, int cell)
     {
         int reach = manager.reachOf(playerId); // 先读进深：freeCell 会把它一起销掉
-        manager.freeCell(playerId);
-        if (arena == null || cell == LOBBY_CELL || !Boolean.TRUE.equals(TrialConfig.ARENA_CLEAR_CELL_ON_END.get()))
+        if (arena == null)
         {
+            // 维度没加载：宁可留着记账。编号一销，那间房就再没人认得它了；留着下次开服清扫还能收。
+            LOGGER.warn("[trial_portal] 试炼场地维度没加载，{} 的隔间 {} 留待下次清扫", playerId, cell);
             return;
         }
-        releaseCellAt(arena, cell, reach);
+        if (cell != LOBBY_CELL)
+        {
+            if (Boolean.TRUE.equals(TrialConfig.ARENA_CLEAR_CELL_ON_END.get()))
+            {
+                releaseCellAt(arena, cell, reach);
+            }
+            else
+            {
+                sweepCellMobs(arena, cell, reach); // 留着平台不等于留着怪
+                BlockPos[] bounds = cellBounds(cell, reach);
+                setRegionForced(arena, bounds[0], bounds[1], false); // 房留在盘上，区块要还回去，否则每场攒一叠常驻
+            }
+        }
+        manager.freeCell(playerId);
     }
 
     public static void releaseCellAt(ServerLevel arena, int cell)
@@ -190,15 +320,29 @@ public final class ArenaService
         {
             return;
         }
+        BlockPos[] bounds = cellBounds(cell, reach);
+        setRegionForced(arena, bounds[0], bounds[1], true);
+        sweepCellMobs(arena, cell, reach);
+        clearCellBlocks(arena, bounds[0], bounds[1]);
+        setRegionForced(arena, bounds[0], bounds[1], false);
+    }
+
+    /**
+     * 拆场的方块盒子。清场盒子要按房间里最大的那间算：房可以比平台宽、比默认高度高，走廊还往 +Z
+     * 接出去 reach 格。只按平台半径清会把房间两侧外墙留在虚空里，并且把 RoomBuilder 强制加载的
+     * 区块永久留在场上。
+     */
+    private static BlockPos[] cellBounds(int cell, int reach)
+    {
         BlockPos origin = cellOrigin(cell);
-        // 清场盒子要按房间里最大的那间算：房可以比平台宽、比默认高度高，走廊还往 +Z 接出去 reach 格。
-        // 只按平台半径清会把房间两侧外墙留在虚空里，并且把 RoomBuilder 强制加载的区块永久留在场上。
         int halfWidth = cellHalfFootprint();
         int topY = Math.max(10, RoomLibrary.maxHeight() + 2);
         int depth = halfWidth + Math.max(0, reach) + 8;
-        BlockPos from = origin.offset(-halfWidth, -1, -halfWidth);
-        BlockPos to = origin.offset(halfWidth, topY, depth);
-        setRegionForced(arena, from, to, true);
+        return new BlockPos[] {origin.offset(-halfWidth, -1, -halfWidth), origin.offset(halfWidth, topY, depth)};
+    }
+
+    private static void clearCellBlocks(ServerLevel arena, BlockPos from, BlockPos to)
+    {
         for (BlockPos pos : BlockPos.betweenClosed(from, to))
         {
             if (arena.getBlockState(pos).isAir())
@@ -207,7 +351,6 @@ public final class ArenaService
             }
             arena.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
         }
-        setRegionForced(arena, from, to, false);
     }
 
     private static void setRegionForced(ServerLevel level, BlockPos from, BlockPos to, boolean forced)
@@ -228,8 +371,12 @@ public final class ArenaService
     /**
      * 启动后清扫孤儿隔间：存档里记着有人占格子，但那个人已经没有会话了
      * （重启、崩溃、被踢都会留下这种状态）。不清就会在虚空里越攒越多没人认领的平台。
+     * <p>
+     * 分两步走：这一步只加载区块和抽方块，怪和强制加载留给 {@link #tickPendingReleases} 下一轮收。
+     * 原因是刚 force 的区块里，存档怪要等实体注入跑完才进得了实体查询——当场扫等于没扫。
+     * 记账也留到第二步才销：中途再崩一次，下一次开服还会认得这些格子。
      *
-     * @return 回收掉的隔间数
+     * @return 排队回收的隔间数
      */
     public static int sweepOrphanCells(MinecraftServer server)
     {
@@ -242,19 +389,78 @@ public final class ArenaService
         int swept = 0;
         for (Map.Entry<UUID, Integer> entry : manager.cellsSnapshot().entrySet())
         {
-            if (manager.sessionOf(entry.getKey()) == null)
+            if (manager.sessionOf(entry.getKey()) != null)
             {
-                releaseCellAt(arena, entry.getValue(), manager.reachOf(entry.getKey()));
-                manager.freeCell(entry.getKey());
-                manager.takeHome(entry.getKey());
-                swept++;
+                continue;
             }
+            int cell = entry.getValue();
+            int reach = manager.reachOf(entry.getKey());
+            if (cell != LOBBY_CELL)
+            {
+                BlockPos[] bounds = cellBounds(cell, reach);
+                setRegionForced(arena, bounds[0], bounds[1], true);
+                clearCellBlocks(arena, bounds[0], bounds[1]);
+                PENDING_RELEASES.add(new PendingRelease(cell, reach, entry.getKey()));
+            }
+            swept++;
         }
         if (swept > 0)
         {
-            LOGGER.info("[trial_portal] 启动清扫：回收 {} 个无主隔间", swept);
+            LOGGER.info("[trial_portal] 启动清扫：回收 {} 个无主隔间（怪与强制加载下一轮收）", swept);
         }
         return swept;
+    }
+
+    /** {@link #sweepOrphanCells} 的第二步：区块这轮已经加载完，把遗留的怪清掉再松手。 */
+    public static void tickPendingReleases(MinecraftServer server)
+    {
+        if (PENDING_RELEASES.isEmpty())
+        {
+            return;
+        }
+        ServerLevel arena = level(server);
+        if (arena == null)
+        {
+            return; // 维度没加载就留到下一轮，不能先把记账销掉
+        }
+        TrialManager manager = TrialManager.get(server);
+        List<PendingRelease> due = new ArrayList<>(PENDING_RELEASES);
+        PENDING_RELEASES.clear();
+        for (PendingRelease pending : due)
+        {
+            sweepCellMobs(arena, pending.cell(), pending.reach());
+            BlockPos[] bounds = cellBounds(pending.cell(), pending.reach());
+            setRegionForced(arena, bounds[0], bounds[1], false);
+            manager.freeCell(pending.playerId());
+            manager.takeHome(pending.playerId());
+        }
+    }
+
+    /**
+     * 把重启后还站在隔间区的人接回家：会话不进存档，所以他脚下那间已经被开服清扫拆掉了，
+     * 不接这一把就是让他从空处掉进虚空。大厅里没会话地站着是正常状态，不算落难。
+     */
+    public static void rescueStrandedPlayers(MinecraftServer server)
+    {
+        TrialManager manager = TrialManager.get(server);
+        List<ServerPlayer> players = new ArrayList<>(server.getPlayerList().getPlayers()); // 送回家会动原列表
+        BlockPos lobby = cellOrigin(LOBBY_CELL);
+        int safe = radius() + 2;
+        for (ServerPlayer player : players)
+        {
+            if (!isInArena(player) || manager.sessionOf(player.getUUID()) != null)
+            {
+                continue;
+            }
+            if (Math.abs(player.getX() - (lobby.getX() + 0.5D)) <= safe
+                    && Math.abs(player.getZ() - (lobby.getZ() + 0.5D)) <= safe)
+            {
+                continue;
+            }
+            LOGGER.warn("[trial_portal] {} 站在没有会话的隔间区（{}），先送回他的回返点",
+                    player.getScoreboardName(), player.blockPosition().toShortString());
+            returnHome(player);
+        }
     }
 
     // ------------------------------------------------------------------ 建台
@@ -277,30 +483,61 @@ public final class ArenaService
                     continue;
                 }
                 BlockPos pos = origin.offset(dx, 0, dz);
-                if (!level.getBlockState(pos).isAir())
+                boolean ring = Math.max(Math.abs(dx), Math.abs(dz)) == r;
+                if (level.getBlockState(pos).isAir())
                 {
-                    continue; // 幂等：已经铺过就不动它
+                    level.setBlock(pos, floor, Block.UPDATE_ALL);
                 }
-                level.setBlock(pos, floor, Block.UPDATE_ALL);
-                BlockPos above = pos.above();
-                if (Math.max(Math.abs(dx), Math.abs(dz)) == r && level.getBlockState(above).isAir()
-                        && !isRoomGate(mode, dx, dz, r))
+                // 围栏：怪能跳 1 格，所以按配置高度往上补齐。放在地板判断之外——大厅永远不拆，
+                // 老存档上那圈只有一格高，得能在重复建台时长高。
+                if (ring && !isRoomGate(mode, dx, dz, r))
                 {
-                    level.setBlock(above, Blocks.GLASS.defaultBlockState(), Block.UPDATE_ALL); // 围栏，防止一脚踩空掉虚空
+                    for (int dy = 1; dy <= fenceHeight(); dy++)
+                    {
+                        BlockPos wallPos = pos.above(dy);
+                        if (level.getBlockState(wallPos).isAir())
+                        {
+                            level.setBlock(wallPos, Blocks.GLASS.defaultBlockState(), Block.UPDATE_ALL);
+                        }
+                    }
                 }
             }
         }
+        // 先清掉台面上任何遗留终端，再按槽位放：大厅永远不拆，旧布局留下的终端就会这样重复出现
+        clearTerminals(level, origin, r);
+        int gap = Math.max(1, (r - 1) / 3);
+        int row = -(r - 1); // 北侧台沿一列：玩家落地时 yaw=180 正好对着它，也不挡中间的打斗区
         if (mode == null)
         {
-            placeTerminal(level, origin.offset(-4, 1, 0), ModBlocks.CHALLENGE_PORTAL.get().defaultBlockState());
-            placeTerminal(level, origin.offset(0, 1, -4), ModBlocks.TOWER_PORTAL.get().defaultBlockState());
-            placeTerminal(level, origin.offset(4, 1, 0), ModBlocks.TRIAL_PORTAL.get().defaultBlockState());
-            placeTerminal(level, origin.offset(0, 1, 4), ModBlocks.ARENA_EXIT.get().defaultBlockState());
+            placeTerminal(level, origin.offset(-3 * gap, 1, row), ModBlocks.CHALLENGE_PORTAL.get().defaultBlockState());
+            placeTerminal(level, origin.offset(-gap, 1, row), ModBlocks.TOWER_PORTAL.get().defaultBlockState());
+            placeTerminal(level, origin.offset(gap, 1, row), ModBlocks.TRIAL_PORTAL.get().defaultBlockState());
+            placeTerminal(level, origin.offset(3 * gap, 1, row), ModBlocks.ARENA_EXIT.get().defaultBlockState());
         }
         else
         {
-            placeTerminal(level, origin.offset(0, 1, -3), blockFor(mode));
-            placeTerminal(level, origin.offset(0, 1, 3), ModBlocks.ARENA_EXIT.get().defaultBlockState());
+            placeTerminal(level, origin.offset(-gap, 1, row), blockFor(mode));
+            placeTerminal(level, origin.offset(gap, 1, row), ModBlocks.ARENA_EXIT.get().defaultBlockState());
+        }
+    }
+
+    /** 把平台范围内已经站着的终端（含上一版布局留下的）先抹平。 */
+    private static void clearTerminals(ServerLevel level, BlockPos origin, int r)
+    {
+        for (int dx = -r; dx <= r; dx++)
+        {
+            for (int dz = -r; dz <= r; dz++)
+            {
+                for (int dy = 1; dy <= 2; dy++)
+                {
+                    BlockPos pos = origin.offset(dx, dy, dz);
+                    Block block = level.getBlockState(pos).getBlock();
+                    if (block instanceof TrialPortalBlock || block instanceof ArenaExitBlock)
+                    {
+                        level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                    }
+                }
+            }
         }
     }
 
@@ -314,32 +551,6 @@ public final class ArenaService
         return mode == TrialMode.TRIAL && dz == radius && Math.abs(dx) <= 1;
     }
 
-    private static void clearPlatform(ServerLevel level, BlockPos origin)
-    {
-        int r = radius();
-        AABB region = new AABB(origin.offset(-r, -2, -r), origin.offset(r + 1, 6, r + 1));
-        for (Entity entity : level.getEntitiesOfClass(Entity.class, region))
-        {
-            if (!(entity instanceof ServerPlayer))
-            {
-                entity.discard(); // 拆台时别把留在里面的怪变成悬空实体
-            }
-        }
-        for (int dx = -r; dx <= r; dx++)
-        {
-            for (int dz = -r; dz <= r; dz++)
-            {
-                if (Math.max(Math.abs(dx), Math.abs(dz)) > r)
-                {
-                    continue;
-                }
-                BlockPos pos = origin.offset(dx, 0, dz);
-                level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
-                level.setBlock(pos.above(), Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
-            }
-        }
-    }
-
     private static void placeTerminal(ServerLevel level, BlockPos pos, BlockState state)
     {
         BlockState existing = level.getBlockState(pos);
@@ -347,6 +558,56 @@ public final class ArenaService
         {
             level.setBlock(pos, state, Block.UPDATE_ALL);
         }
+    }
+
+    /**
+     * 记下"进场地之前人在哪"。直连玩法不经过大厅，所以这一步必须在两个开局入口都做，
+     * 否则结算时没有回返点，人会被丢到世界出生点。
+     */
+    private static void recordReturnPoint(TrialManager manager, ServerPlayer player)
+    {
+        manager.recordHome(player.getUUID(), new TrialManager.HomePos(player.level().dimension(),
+                player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot()));
+    }
+
+    /**
+     * 把这片隔间里遗留的怪清掉。生成的怪都 {@code setPersistenceRequired()}，不主动 discard 就永远留在存档里。
+     * <p>
+     * 调用时机决定它有没有用：实体查询只看已加载区块里、且已经注入完的怪。整场试炼期间这个隔间的区块一直是
+     * 强制加载的，所以**离场拆台时**扫（{@link #releaseCellAt} 的 force 窗口里）才是主战场；开局前那一次只是兜底，
+     * 只能清到"此刻恰好看得见"的怪——刚 {@code setChunkForced} 完的区块里，存档怪要再等一轮实体注入才进得来，
+     * 所以开服清扫必须分两步（见 {@link #tickPendingReleases}）。
+     *
+     * @return 清掉的实体数
+     */
+    public static int sweepCellMobs(@Nullable ServerLevel arena, int cell, int reach)
+    {
+        if (arena == null || cell == LOBBY_CELL)
+        {
+            return 0;
+        }
+        AABB box = cellBox(cell, reach);
+        int swept = 0;
+        for (net.minecraft.world.entity.Mob mob : arena.getEntitiesOfClass(net.minecraft.world.entity.Mob.class, box))
+        {
+            mob.discard();
+            swept++;
+        }
+        if (swept > 0)
+        {
+            LOGGER.info("[trial_portal] 隔间 {} 开局前清掉 {} 只遗留怪", cell, swept);
+        }
+        return swept;
+    }
+
+    /** 一个隔间从地板到最远进深的完整盒子：扫怪与清场都按它算，两处不许各写一份。 */
+    public static AABB cellBox(int cell, int reach)
+    {
+        BlockPos origin = cellOrigin(cell);
+        int half = cellHalfFootprint();
+        int depth = half + Math.max(0, reach) + 8;
+        return new AABB(origin.getX() - half, origin.getY() - 2, origin.getZ() - half,
+                origin.getX() + half + 1, origin.getY() + 26, origin.getZ() + depth + 1);
     }
 
     /**
@@ -381,13 +642,6 @@ public final class ArenaService
             case TOWER -> ModBlocks.TOWER_PORTAL.get().defaultBlockState();
             case TRIAL -> ModBlocks.TRIAL_PORTAL.get().defaultBlockState();
         };
-    }
-
-    @Nullable
-    private static TrialMode modeOf(TrialSession session)
-    {
-        TrialDefinition definition = TrialLibrary.get(session.definitionId);
-        return definition == null ? null : definition.mode;
     }
 
     // ------------------------------------------------------------------ 传送

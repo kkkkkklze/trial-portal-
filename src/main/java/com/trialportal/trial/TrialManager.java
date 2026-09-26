@@ -57,12 +57,17 @@ public class TrialManager extends SavedData
     private static final String TAG_CELLS = "arena_cells";
     private static final String TAG_REACH = "arena_reach";
     private static final String TAG_HOMES = "arena_homes";
+    /** 副本补怪的落点范围：贴着隔间平台，不做配置项（越界判定与拆场盒子都按平台尺寸算）。 */
+    private static final double DUNGEON_SPAWN_RADIUS = 7.0D;
+    private static final double DUNGEON_SPAWN_HEIGHT = 2.0D;
 
     public enum Outcome
     {
-        /** 结算离场：发奖 */
+        /** 主动结算或打完：发奖，爬塔记层 */
         SETTLED,
-        /** 放弃 / 死亡 / 中止：按配置可能清空待结算奖励 */
+        /** 走出场地（点返回终端 / 越界离开）：已攒的奖励照发，但不算通关、不记塔层 */
+        LEFT,
+        /** 管理员中止 / 定义丢失：作废累计奖励 */
         ABANDONED
     }
 
@@ -71,7 +76,6 @@ public class TrialManager extends SavedData
     private final Map<UUID, List<TrialDefinition.RewardEntry>> carriedOver = new HashMap<>();
     /** 玩家 UUID → 已通过的最高层数。 */
     private final Map<UUID, Integer> towerFloors = new LinkedHashMap<>();
-    private int spawnCursor;
     /** 玩家 → 占用的隔间编号。与回返点一起进存档：否则重启后世界里留下没人认领的隔间平台。 */
     private final Map<UUID, Integer> arenaCells = new LinkedHashMap<>();
     /** 玩家 → 本场沿 +Z 建出去的进深。拆场盒子的尺寸要看它，写进存档才不会在调用点上被"忘记传"。 */
@@ -177,14 +181,26 @@ public class TrialManager extends SavedData
 
     // ------------------------------------------------------------- 场地记账
 
-    public int allocateCell(UUID playerId)
+    /**
+     * 给这个玩家在这段玩法里挑一个空闲隔间编号（取最小空闲号，重启后也能接上账）。
+     * 编号按玩法分段，所以闯关与爬塔永远不会共用同一块地。
+     *
+     * @param arena 换段时用来拆掉旧那间；null = 只做记账（自检里用）
+     */
+    public int allocateCell(UUID playerId, TrialMode mode, @Nullable ServerLevel arena)
     {
         Integer existing = this.arenaCells.get(playerId);
-        if (existing != null)
+        if (existing != null && existing >= mode.cellBase() && existing < mode.cellBase() + 1000)
         {
             return existing;
         }
-        int candidate = 1;
+        if (existing != null && arena != null && sessionOf(playerId) == null)
+        {
+            // 换玩法了。旧编号要是只被覆盖掉，就再没人记得那儿有一间房，平台会永远留在虚空里。
+            // 有活会话时一律不拆：那间就是他此刻站着的场地（开局入口已先拒，这里是第二道保险）。
+            com.trialportal.arena.ArenaService.releaseCellAt(arena, existing, reachOf(playerId));
+        }
+        int candidate = mode.cellBase();
         while (this.arenaCells.containsValue(candidate))
         {
             candidate++;
@@ -229,13 +245,18 @@ public class TrialManager extends SavedData
         return new LinkedHashMap<>(this.arenaCells);
     }
 
+    /**
+     * 记下"进场地之前人在哪"。每次都覆盖：以前只在没记录时写，于是"进大厅 → 回家 → 换个门再进来"之后
+     * 回返点还停在第一次的位置。场地内的坐标一律不记——回返点落在场地上等于把人送回虚空。
+     */
     public void recordHome(UUID playerId, HomePos home)
     {
-        if (!this.arenaHomes.containsKey(playerId))
+        if (com.trialportal.arena.ArenaService.isArena(home.dimension()))
         {
-            this.arenaHomes.put(playerId, home);
-            this.setDirty();
+            return;
         }
+        this.arenaHomes.put(playerId, home);
+        this.setDirty();
     }
 
     @Nullable
@@ -314,7 +335,12 @@ public class TrialManager extends SavedData
      * @param origin 生成中心与放弃判定中心
      * @return false 表示没开成（已有一场 / 取不到波次内容），原因已通过 feedback 告知
      */
-    public boolean start(ServerPlayer player, TrialDefinition definition, BlockPos origin, int cell)
+    /**
+     * @param dimension 会话真正所在的维度——**不能**取玩家此刻的维度：野外直连开局时人还在主世界，
+     *                  取错了会让下一 tick 直接判"离开范围"（真机撞到的）。
+     */
+    public boolean start(ServerPlayer player, TrialDefinition definition, BlockPos origin, int cell,
+                         ResourceKey<Level> dimension)
     {
         if (this.sessions.containsKey(player.getUUID()))
         {
@@ -322,8 +348,9 @@ public class TrialManager extends SavedData
             return false;
         }
         TrialSession session = new TrialSession(player.getUUID(), player.getScoreboardName(), definition.id(),
-                player.level().dimension(), origin);
+                dimension, origin);
         session.cell = cell;
+        session.mode = definition.mode; // 开局就钉住玩法，之后不再靠反查定义（见 TrialSession#mode）
 
         if (definition.isEndless())
         {
@@ -375,7 +402,11 @@ public class TrialManager extends SavedData
         TrialDefinition definition = TrialLibrary.get(session.definitionId);
         if (definition == null)
         {
-            TrialFeedback.failure(player, "这份试炼已从数据包里移除，无法继续");
+            // 副本会话的定义本来就不在 trials/ 里（它的 definitionId 是 challenges/ 的 id），
+            // 那条路没有"下一波"要点，不能报成"试炼已被移除"。
+            TrialFeedback.failure(player, session.challengeId != null
+                    ? "副本不用继续下一波：时限到自动结算，随时点返回终端离场"
+                    : "这份试炼已从数据包里移除，无法继续");
             return;
         }
         switch (session.phase)
@@ -431,11 +462,9 @@ public class TrialManager extends SavedData
             return;
         }
         TrialDefinition definition = TrialLibrary.get(session.definitionId);
-        if (definition == null)
-        {
-            return;
-        }
-        boolean clearsPending = switch (definition.mode)
+        // 玩法读会话自己钉的那份：副本会话的 definitionId 不在 trials/ 里，以前在这里查不到就直接 return，
+        // 结果人在副本里死掉时拆台、清怪、转存奖励整段被跳过。
+        boolean clearsPending = switch (session.mode)
         {
             case CHALLENGE -> TrialConfig.CHALLENGE_DEATH_CLEARS_PENDING.get();
             case TOWER -> TrialConfig.TOWER_DEATH_CLEARS_PENDING.get();
@@ -447,7 +476,7 @@ public class TrialManager extends SavedData
             this.carriedOver.put(player.getUUID(), new ArrayList<>(session.pending));
             session.pending.clear();
         }
-        if (definition.isEndless())
+        if (definition != null && definition.isEndless())
         {
             onTowerDeath(player, session);
         }
@@ -457,10 +486,21 @@ public class TrialManager extends SavedData
         }
         TrialFeedback.announce(player, "试炼失败",
                 clearsPending ? "累计奖励已清空" : "累计奖励留到下一场",
-                "[试炼] 你死了 · " + definition.displayName);
+                "[试炼] 你死了 · " + sessionLabel(session, definition));
         // 死亡由原版重生流程送玩家回去，这里只拆隔间、清 cell 记录（进深从记账里读）
         com.trialportal.arena.ArenaService.releaseCell(
                 com.trialportal.arena.ArenaService.level(player.server), this, player.getUUID(), session.cell);
+    }
+
+    /** 播报用的名字：trials/ 里查得到就用它；副本会话的定义在 challenges/，别拿副本 id 去 trials/ 里找。 */
+    private static String sessionLabel(TrialSession session, @Nullable TrialDefinition definition)
+    {
+        if (definition != null)
+        {
+            return definition.displayName;
+        }
+        ChallengeDefinition challenge = session.challengeId == null ? null : ChallengeLibrary.get(session.challengeId);
+        return challenge != null ? challenge.displayNameOrDefault() : session.definitionId;
     }
 
     private void onTowerDeath(ServerPlayer player, TrialSession session)
@@ -513,6 +553,11 @@ public class TrialManager extends SavedData
             return;
         }
         TrialDefinition definition = TrialLibrary.get(session.definitionId);
+        if (session.challengeId != null)
+        {
+            stepDungeon(server, player, session, interval);
+            return;
+        }
         if (definition == null)
         {
             end(player, session, null, Outcome.ABANDONED);
@@ -524,21 +569,10 @@ public class TrialManager extends SavedData
         {
             return; // 原点区块没加载，跳过本轮：否则会把「没加载」误判成「已清完」
         }
-        if (!isInsideArena(player, session, definition))
+        if (!stillInsideOrEnded(player, session, definition, interval))
         {
-            session.outsideTicks += interval;
-            int grace = TrialConfig.GENERAL_ABANDON_GRACE_TICKS.get();
-            if (session.outsideTicks < grace)
-            {
-                // 先警告再作废：跑远捡个东西不该直接输掉一整场
-                TrialFeedback.actionbar(player, "已离开试炼范围，" + ((grace - session.outsideTicks) / 20 + 1) + " 秒内回来，否则本场作废");
-                return;
-            }
-            end(player, session, definition, Outcome.ABANDONED);
-            TrialFeedback.announce(player, "试炼放弃", "已离开试炼范围", "[试炼] 你离开了范围，累计奖励作废");
             return;
         }
-        session.outsideTicks = 0;
         pruneDeadMobs(level, session);
         switch (session.phase)
         {
@@ -607,6 +641,181 @@ public class TrialManager extends SavedData
         {
             end(player, session, definition, Outcome.SETTLED);
         }
+    }
+
+    /**
+     * 越界处理：宽限期内给倒计时提示并跳过本轮推进，超时则统一结算离场。
+     *
+     * @return true 表示本场还在、本轮可以继续推进
+     */
+    private boolean stillInsideOrEnded(ServerPlayer player, TrialSession session,
+                                       @Nullable TrialDefinition definition, int interval)
+    {
+        if (isInsideArena(player, session, definition))
+        {
+            session.outsideTicks = 0;
+            return true;
+        }
+        session.outsideTicks += interval;
+        int grace = TrialConfig.GENERAL_ABANDON_GRACE_TICKS.get();
+        if (session.outsideTicks < grace)
+        {
+            // 先警告再离场：跑远捡个东西不该直接输掉一整场
+            TrialFeedback.actionbar(player, "已离开试炼范围，" + ((grace - session.outsideTicks) / 20 + 1)
+                    + " 秒内回来，否则本场结束（已攒奖励照发）");
+            return false;
+        }
+        end(player, session, definition, Outcome.LEFT);
+        TrialFeedback.announce(player, "试炼结束", "已离开试炼范围", "[试炼] 你离开了范围，已攒的奖励已发放");
+        return false;
+    }
+
+    /**
+     * 开一局资源副本：不计波次，时限内怪持续补到上限，杀一只攒一份奖，出去统一结算。
+     * 隔间分配、离场、拆台这些与波次玩法完全共用，只有玩法循环不同。
+     */
+    public boolean startDungeon(ServerPlayer player, ChallengeDefinition challenge, String difficultyKey,
+                                BlockPos origin, int cell, ResourceKey<Level> dimension)
+    {
+        if (this.sessions.containsKey(player.getUUID()))
+        {
+            TrialFeedback.failure(player, "你已经有一场试炼在进行中");
+            return false;
+        }
+        ChallengeDefinition.Difficulty difficulty = challenge.difficulty(difficultyKey);
+        if (difficulty == null)
+        {
+            TrialFeedback.failure(player, "这份副本没有「" + difficultyKey + "」难度");
+            return false;
+        }
+        TrialSession session = new TrialSession(player.getUUID(), player.getScoreboardName(), challenge.id(),
+                dimension, origin);
+        session.cell = cell;
+        session.mode = TrialMode.CHALLENGE;
+        session.challengeId = challenge.id();
+        session.difficulty = difficultyKey;
+        session.remainingTicks = challenge.durationTicks;
+        this.sessions.put(player.getUUID(), session);
+        List<TrialDefinition.RewardEntry> carried = this.carriedOver.remove(player.getUUID());
+        if (carried != null && !carried.isEmpty())
+        {
+            session.addReward(carried);
+            TrialFeedback.chat(player, "[试炼] 上一场攒下的奖励已并入本场待结算池");
+        }
+        ServerLevel level = player.server.getLevel(dimension);
+        if (level != null)
+        {
+            spawnDungeonBatch(level, player, session, difficulty);
+        }
+        TrialFeedback.title(player, challenge.displayNameOrDefault(),
+                difficulty.displayNameOrDefault(difficultyKey) + " · 时限 " + challenge.durationTicks / 20 + " 秒");
+        TrialFeedback.chat(player, "[副本] 杀一只攒一份奖，出去（点返回终端）就结算");
+        return true;
+    }
+
+    /** 副本的一轮：时限、击杀计奖、按节奏补怪。 */
+    private void stepDungeon(MinecraftServer server, ServerPlayer player, TrialSession session, int interval)
+    {
+        ChallengeDefinition challenge = ChallengeLibrary.get(session.challengeId);
+        ChallengeDefinition.Difficulty difficulty = challenge == null ? null : challenge.difficulty(session.difficulty);
+        if (challenge == null || difficulty == null)
+        {
+            end(player, session, null, Outcome.ABANDONED);
+            TrialFeedback.failure(player, "这份副本定义已被移除，本场中止");
+            return;
+        }
+        ServerLevel level = server.getLevel(session.dimension);
+        if (level == null || !level.isLoaded(session.origin))
+        {
+            return; // 原点区块没加载，跳过本轮：否则会把「没加载」误判成「怪都死了」
+        }
+        if (!stillInsideOrEnded(player, session, null, interval))
+        {
+            return;
+        }
+        int died = pruneDeadMobs(level, session);
+        if (died > 0)
+        {
+            session.kills += died;
+            for (int i = 0; i < died; i++)
+            {
+                session.addReward(difficulty.killRewards);
+            }
+        }
+        session.remainingTicks -= interval;
+        if (session.remainingTicks <= 0)
+        {
+            TrialFeedback.chat(player, "[副本] 时限到，" + session.kills + " 只的奖励正在结算");
+            end(player, session, null, Outcome.SETTLED);
+            return;
+        }
+        session.respawnCooldown -= interval;
+        if (session.respawnCooldown > 0)
+        {
+            return;
+        }
+        session.respawnCooldown = difficulty.spawnIntervalTicks;
+        if (session.aliveMobs.size() < difficulty.mobCap)
+        {
+            spawnDungeonBatch(level, player, session, difficulty);
+        }
+    }
+
+    /** 补一批怪，不超过该档的场上限。 */
+    private void spawnDungeonBatch(ServerLevel level, ServerPlayer owner, TrialSession session,
+                                   ChallengeDefinition.Difficulty difficulty)
+    {
+        int room = difficulty.mobCap - session.aliveMobs.size();
+        int batch = Math.min(difficulty.spawnBatch, Math.max(0, room));
+        for (int i = 0; i < batch; i++)
+        {
+            TrialDefinition.MobEntry entry = difficulty.mobs.get(session.spawnCursor++ % difficulty.mobs.size());
+            Vec3 position = findSpawnPosition(level, session.origin, DUNGEON_SPAWN_RADIUS, DUNGEON_SPAWN_HEIGHT);
+            Mob mob = createMobAt(level, entry, position);
+            if (mob == null)
+            {
+                continue;
+            }
+            boostHealth(mob, difficulty.healthMultiplier);
+            if (mob instanceof Enemy)
+            {
+                mob.setTarget(owner);
+            }
+            mob.setPersistenceRequired();
+            if (level.addFreshEntity(mob))
+            {
+                session.aliveMobs.add(mob.getUUID());
+            }
+        }
+    }
+
+    /**
+     * 难度血量倍率：走 permanent modifier（会随实体存档），不是 transient——
+     * 与 {@code BossAffixLibrary} 同一个道理，区块重载后临时修饰符会丢。
+     */
+    static void boostHealth(Mob mob, double multiplier)
+    {
+        if (multiplier <= 0.999D)
+        {
+            return;
+        }
+        net.minecraft.world.entity.ai.attributes.AttributeInstance instance =
+                mob.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
+        if (instance == null)
+        {
+            return;
+        }
+        String name = "trial_portal:dungeon_health";
+        UUID uuid = UUID.nameUUIDFromBytes(name.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        double base = instance.getBaseValue();
+        // 同 UUID 再加一次会直接抛 IllegalArgumentException（与 BossAffixLibrary 同一处坑），必须先查
+        if (instance.getModifier(uuid) == null)
+        {
+            instance.addPermanentModifier(new net.minecraft.world.entity.ai.attributes.AttributeModifier(uuid, name,
+                    base * (multiplier - 1.0D),
+                    net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADDITION));
+        }
+        mob.setHealth(mob.getMaxHealth());
     }
 
     private boolean beginWave(ServerPlayer player, TrialSession session, TrialDefinition definition)
@@ -702,34 +911,14 @@ public class TrialManager extends SavedData
     private boolean spawnOne(ServerLevel level, ServerPlayer owner, TrialSession session, TrialDefinition definition,
                              TrialDefinition.WaveContent content, TrialDefinition.MobEntry entry)
     {
-        ResourceLocation typeId = entry.entityId();
-        if (typeId == null)
-        {
-            LOGGER.warn("[trial_portal] entity ID 非法：{}", entry.entity);
-            return false;
-        }
-        EntityType<?> type = ForgeRegistries.ENTITY_TYPES.getValue(typeId);
-        if (type == null)
-        {
-            LOGGER.warn("[trial_portal] 找不到实体类型 {}", typeId);
-            return false;
-        }
-        Entity created = type.create(level);
-        if (!(created instanceof Mob mob))
-        {
-            LOGGER.warn("[trial_portal] {} 不是可生成的生物", typeId);
-            return false;
-        }
-        if (entry.nbt != null && !entry.nbt.isBlank())
-        {
-            applyNbt(mob, entry.nbt);
-        }
         Vec3 position = session.spawnPoints == null || session.spawnPoints.isEmpty()
-                ? findSpawnPosition(level, session.origin, definition)
-                : Vec3.atBottomCenterOf(session.spawnPoints.get(spawnCursor++ % session.spawnPoints.size()));
-        mob.setPos(position.x, position.y, position.z);
-        mob.setYRot(level.getRandom().nextFloat() * 360.0F);
-
+                ? findSpawnPosition(level, session.origin, definition.spawnRadiusOrDefault(), definition.spawnHeightOrDefault())
+                : Vec3.atBottomCenterOf(session.spawnPoints.get(session.spawnCursor++ % session.spawnPoints.size()));
+        Mob mob = createMobAt(level, entry, position);
+        if (mob == null)
+        {
+            return false;
+        }
         if (definition.isEndless() && content.floor > 0 && definition.scaling != null)
         {
             scaleForFloor(mob, definition, content.floor);
@@ -750,6 +939,37 @@ public class TrialManager extends SavedData
         }
         session.aliveMobs.add(mob.getUUID());
         return true;
+    }
+
+    /** 造一只怪并摆到位：不做加成、不入世界。波次玩法与资源副本共用这一份，免得两份创建逻辑漂移。 */
+    @Nullable
+    private static Mob createMobAt(ServerLevel level, TrialDefinition.MobEntry entry, Vec3 position)
+    {
+        ResourceLocation typeId = entry.entityId();
+        if (typeId == null)
+        {
+            LOGGER.warn("[trial_portal] entity ID 非法：{}", entry.entity);
+            return null;
+        }
+        EntityType<?> type = ForgeRegistries.ENTITY_TYPES.getValue(typeId);
+        if (type == null)
+        {
+            LOGGER.warn("[trial_portal] 找不到实体类型 {}", typeId);
+            return null;
+        }
+        Entity created = type.create(level);
+        if (!(created instanceof Mob mob))
+        {
+            LOGGER.warn("[trial_portal] {} 不是可生成的生物", typeId);
+            return null;
+        }
+        if (entry.nbt != null && !entry.nbt.isBlank())
+        {
+            applyNbt(mob, entry.nbt);
+        }
+        mob.setPos(position.x, position.y, position.z);
+        mob.setYRot(level.getRandom().nextFloat() * 360.0F);
+        return mob;
     }
 
     /**
@@ -842,10 +1062,10 @@ public class TrialManager extends SavedData
     }
 
     /** 生成位置是「扫」出来的：16 次随机水平取点，每次从初始高度上下各扫 5 格找落脚位。 */
-    private static Vec3 findSpawnPosition(ServerLevel level, BlockPos origin, TrialDefinition definition)
+    private static Vec3 findSpawnPosition(ServerLevel level, BlockPos origin, double radiusValue, double heightValue)
     {
-        double radius = Math.max(1.0D, definition.spawnRadiusOrDefault());
-        double height = Math.max(1.0D, definition.spawnHeightOrDefault());
+        double radius = Math.max(1.0D, radiusValue);
+        double height = Math.max(1.0D, heightValue);
         var random = level.getRandom();
         for (int attempt = 0; attempt < 16; attempt++)
         {
@@ -866,8 +1086,9 @@ public class TrialManager extends SavedData
         return Vec3.atBottomCenterOf(origin.above()); // 兜底：传送门正上方一格，可能卡进方块
     }
 
-    private static void pruneDeadMobs(ServerLevel level, TrialSession session)
+    private static int pruneDeadMobs(ServerLevel level, TrialSession session)
     {
+        int died = 0;
         Iterator<java.util.UUID> iterator = session.aliveMobs.iterator();
         while (iterator.hasNext())
         {
@@ -876,8 +1097,10 @@ public class TrialManager extends SavedData
             if (entity == null || (entity instanceof LivingEntity living && !living.isAlive()))
             {
                 iterator.remove();
+                died++;
             }
         }
+        return died;
     }
 
     private static void clearMobs(@Nullable ServerLevel level, TrialSession session)
@@ -897,19 +1120,19 @@ public class TrialManager extends SavedData
         session.aliveMobs.clear();
     }
 
-    private boolean isInsideArena(ServerPlayer player, TrialSession session, TrialDefinition definition)
+    private boolean isInsideArena(ServerPlayer player, TrialSession session, @Nullable TrialDefinition definition)
     {
         if (!player.level().dimension().equals(session.dimension))
         {
             return false; // 换维度 = 放弃
         }
-        return withinAllowedArea(player.position(), session.origin, abandonLimit(session, definition), session.region);
+        return withinAllowedArea(player.position(), session.origin, abandonLimit(definition), session.region);
     }
 
-    /** 越界判定的距离上限：0 = 永不判放弃，负数 = 用配置默认。 */
-    private double abandonLimit(TrialSession session, TrialDefinition definition)
+    /** 越界判定的距离上限：0 = 永不判放弃，负数（或没有定义）= 用配置默认。 */
+    private double abandonLimit(@Nullable TrialDefinition definition)
     {
-        double limit = definition.abandonDistanceOrDefault();
+        double limit = definition == null ? -1.0D : definition.abandonDistanceOrDefault();
         if (limit < 0.0D)
         {
             limit = TrialConfig.GENERAL_DEFAULT_ABANDON_DISTANCE.get();
@@ -955,25 +1178,44 @@ public class TrialManager extends SavedData
     {
         this.sessions.remove(session.playerId);
         ServerLevel level = player.server.getLevel(session.dimension);
-        if (outcome == Outcome.SETTLED && definition != null && definition.isEndless())
+        boolean endless = definition != null && definition.isEndless();
+        if (outcome == Outcome.SETTLED && endless)
         {
             recordFloor(player.getUUID(), session.waveNumber());
         }
-        if (outcome == Outcome.SETTLED)
+        if (outcome == Outcome.ABANDONED)
         {
-            grantRewards(player, session);
-            if (definition != null && definition.isEndless())
-            {
-                recordFloor(player.getUUID(), session.waveNumber());
-            }
+            // 只有管理员中止与定义丢失会作废奖励；「走出去」不再吞奖励
+            session.pending.clear();
         }
         else
         {
-            // 放弃 / 中止 / 定义丢失：累计奖励直接作废，没有「留着下一场」这条路
-            session.pending.clear();
+            if (outcome == Outcome.LEFT)
+            {
+                // 出去就算没通关：奖励照发，但不算成功，也不给通关那一份
+                TrialFeedback.chat(player, "[试炼] 提前离场，本场按未通关计");
+            }
+            grantRewards(player, session);
         }
         clearMobs(level, session);
         com.trialportal.arena.ArenaService.returnHome(player);
+    }
+
+    /**
+     * 点返回终端 = 离场并把已攒的奖励结掉。没有会话时只是回家。
+     * 结算与离场再不是两条路：以前点错一下就把整场奖励丢了。
+     */
+    public void leave(ServerPlayer player)
+    {
+        TrialSession session = this.sessions.get(player.getUUID());
+        if (session == null)
+        {
+            com.trialportal.arena.ArenaService.returnHome(player);
+            return;
+        }
+        // 一律按「出去就结算」处理。以前这里先看 trials/ 里有没有定义、没有就当 ABANDONED，
+        // 而副本会话本来就不在 trials/ 里 —— 结果杀攒的奖励被静默吞掉（真机验出来的）。
+        end(player, session, TrialLibrary.get(session.definitionId), Outcome.LEFT);
     }
 
     private void grantRewards(ServerPlayer player, TrialSession session)
@@ -996,13 +1238,22 @@ public class TrialManager extends SavedData
             int remaining = Math.max(1, reward.count);
             while (remaining > 0)
             {
-                ItemStack stack = new ItemStack(ForgeRegistries.ITEMS.getValue(itemId), Math.min(remaining, 64));
-                remaining -= stack.getCount();
-                if (toInventory && !player.getInventory().add(stack.copy()))
+                int size = Math.min(remaining, 64);
+                ItemStack stack = new ItemStack(ForgeRegistries.ITEMS.getValue(itemId), size);
+                remaining -= size;
+                // Inventory#add 会把装不下的部分留在传进去的那个 stack 上，所以必须传本尊：
+                // 以前传 stack.copy()，背包只吃得下一半时返回 false 而副本仍是满叠，掉地上就凭空多出一倍。
+                if (toInventory)
                 {
-                    dropAtFeet(player, stack.copy());
+                    player.getInventory().add(stack);
                 }
-                granted += stack.getCount();
+                if (!stack.isEmpty())
+                {
+                    // 开关关掉（reward_to_inventory=false）就是全掉脚下，配置注释一直是这么写的；
+                    // 以前的写法是既不进包也不掉地上，只把"发放 N 件"报出来——整批奖励凭空消失。
+                    dropAtFeet(player, stack);
+                }
+                granted += size;
             }
         }
         session.pending.clear();

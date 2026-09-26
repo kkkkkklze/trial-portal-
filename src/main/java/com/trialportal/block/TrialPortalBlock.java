@@ -76,8 +76,14 @@ public class TrialPortalBlock extends BaseEntityBlock implements SneakInteractBl
 
         if (!com.trialportal.arena.ArenaService.isArena(level.dimension()))
         {
-            // 野外只有一件事：进大厅。就地开一场的旧分支已删除——场地契约只留一条路径。
-            com.trialportal.arena.ArenaService.enterLobby(serverPlayer);
+            // 野外这扇门直连它自己的玩法：点闯关门就是开一局副本。潜行右键才进大厅（想换玩法/参观时用）。
+            if (sneaking)
+            {
+                com.trialportal.arena.ArenaService.enterLobby(serverPlayer);
+                return InteractionResult.CONSUME;
+            }
+            com.trialportal.arena.ArenaService.enterPlay(serverPlayer, this.mode,
+                    TrialLibrary.resolve(this.mode, boundId(level, pos)));
             return InteractionResult.CONSUME;
         }
 
@@ -97,13 +103,8 @@ public class TrialPortalBlock extends BaseEntityBlock implements SneakInteractBl
             TrialFeedback.actionbar(serverPlayer, "潜行右键是结算离场；开始试炼请直接右键");
             return InteractionResult.CONSUME;
         }
-        TrialDefinition definition = TrialLibrary.resolve(this.mode, boundId(level, pos));
-        if (definition == null)
-        {
-            TrialFeedback.failure(serverPlayer, "这个传送门没有可用的试炼定义（mode=" + this.mode.jsonKey() + "）");
-            return InteractionResult.CONSUME;
-        }
-        com.trialportal.arena.ArenaService.beginSession(serverPlayer, definition);
+        com.trialportal.arena.ArenaService.enterPlay(serverPlayer, this.mode,
+                TrialLibrary.resolve(this.mode, boundId(level, pos)));
         return InteractionResult.CONSUME;
     }
 

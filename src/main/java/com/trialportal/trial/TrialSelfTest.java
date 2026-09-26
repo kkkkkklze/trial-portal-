@@ -51,6 +51,12 @@ public final class TrialSelfTest
 
     private TrialSelfTest() {}
 
+    /**
+     * 启动段能验的性质都在这儿。实体相关的判据（扫怪真把怪清掉没有）不在这里，也不在任何无头门里：
+     * {@code runGameTestServer} 在 {@code ServerStartedEvent} 之后一条 tick 都不跑就 Stopping server，
+     * 而 {@code addFreshEntity} 的怪要世界真的 tick 起来才进得了实体查询（实测手动 {@code level.tick}
+     * 推 20 次也不注入）。所以那一条走真机（playtest-bridge），这里只留盒子与记账的硬判据。
+     */
     @SubscribeEvent
     public static void onServerStarted(ServerStartedEvent event)
     {
@@ -58,13 +64,18 @@ public final class TrialSelfTest
         {
             return;
         }
-        List<String> failures = run(event.getServer());
+        finish(event.getServer(), run(event.getServer()));
+    }
+
+    /** 写标记文件（门验的就是它），失败则把自测进程打红。 */
+    private static void finish(MinecraftServer server, List<String> failures)
+    {
         int passed = assertions - failures.size();
         // 落一个标记文件：runGameTestServer 即使服务端在注册表阶段崩掉也会退 0，
         // 光看退出码会把「一条断言都没跑」当成全绿，所以门必须验这个文件（见 build.gradle 的 selfTest 任务）。
         try
         {
-            java.nio.file.Path marker = event.getServer().getServerDirectory().toPath().resolve("selftest-result.txt");
+            java.nio.file.Path marker = server.getServerDirectory().toPath().resolve("selftest-result.txt");
             java.nio.file.Files.writeString(marker, "PASS=" + passed + " FAIL=" + failures.size()
                     + " at=" + java.time.Instant.now() + System.lineSeparator());
         }
@@ -146,17 +157,31 @@ public final class TrialSelfTest
             int second = countPlatformBlocks(arenaLevel, lobby, radius);
             check(failures, first > 0 && first == second,
                     "平台生成必须幂等：第一次 " + first + " 块，第二次 " + second + " 块");
-            check(failures, arenaLevel.getBlockState(lobby.offset(-4, 1, 0)).getBlock()
+            int gap = Math.max(1, (radius - 1) / 3);
+            int row = -(radius - 1);
+            check(failures, arenaLevel.getBlockState(lobby.offset(-3 * gap, 1, row)).getBlock()
                             instanceof com.trialportal.block.TrialPortalBlock,
-                    "大厅应摆出闯关终端");
-            check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, 4)).getBlock()
+                    "大厅北侧台沿应摆出闯关终端（终端不许占场地中央）");
+            check(failures, arenaLevel.getBlockState(lobby.offset(3 * gap, 1, row)).getBlock()
                             instanceof com.trialportal.block.ArenaExitBlock,
-                    "大厅应摆出返回终端");
+                    "大厅北侧台沿应摆出返回终端");
+            check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, 0)).isAir()
+                            && arenaLevel.getBlockState(lobby.offset(0, 1, 4)).isAir(),
+                    "场地中央不许有功能方块：挡打斗区，也被玩家当成'重复出现的传送门'");
+            // 大厅永远不拆台，旧布局/异常留下的终端必须被下一次建台抹平（用户报的"重复出现传送方块"）
+            arenaLevel.setBlock(lobby.offset(2, 1, 3),
+                    com.trialportal.registry.ModBlocks.TRIAL_PORTAL.get().defaultBlockState(), 3);
+            int before = countTerminals(arenaLevel, lobby, radius);
+            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, lobby, null);
+            int after = countTerminals(arenaLevel, lobby, radius);
+            check(failures, before == 5 && after == 4,
+                    "多余终端必须在重建时被抹平：埋一个之后应有 5 个，重建后只剩 4 个（实际 "
+                            + before + " → " + after + "）");
             BlockPos cell = com.trialportal.arena.ArenaService.cellOrigin(1);
             com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, cell, TrialMode.CHALLENGE);
-            check(failures, arenaLevel.getBlockState(cell.offset(0, 1, -3)).getBlock() instanceof TrialPortalBlock,
+            check(failures, arenaLevel.getBlockState(cell.offset(-gap, 1, row)).getBlock() instanceof TrialPortalBlock,
                     "隔间必须有该模式的终端，否则玩家进去就没法继续下一波与结算");
-            check(failures, arenaLevel.getBlockState(cell.offset(0, 1, 3)).getBlock()
+            check(failures, arenaLevel.getBlockState(cell.offset(gap, 1, row)).getBlock()
                             instanceof com.trialportal.block.ArenaExitBlock,
                     "隔间必须有返回终端");
             int cellFirst = countPlatformBlocks(arenaLevel, cell, radius);
@@ -172,6 +197,14 @@ public final class TrialSelfTest
             check(failures, !arenaLevel.getBlockState(trialCell.offset(0, 1, -radius)).isAir()
                             && !arenaLevel.getBlockState(trialCell.offset(-radius, 1, 0)).isAir(),
                     "门只开朝房间那一侧，其余三面仍要围住——门外就是虚空");
+            // 围栏高度：怪能跳 1 格，一格高的台沿等于没关（也等于玩家可以随手把怪打下虚空）
+            int fence = com.trialportal.arena.ArenaService.fenceHeight();
+            check(failures, fence >= 2, "围栏至少要 2 格高才关得住会跳的怪，实际 " + fence);
+            check(failures, !arenaLevel.getBlockState(trialCell.offset(radius, 1, radius)).isAir()
+                            && !arenaLevel.getBlockState(trialCell.offset(radius, fence, radius)).isAir(),
+                    "围栏没按配置高度补齐：角上第 1 格或第 " + fence + " 格是空的");
+            check(failures, arenaLevel.getBlockState(trialCell.offset(0, fence, radius)).isAir(),
+                    "朝房间那侧的门洞只留了 1 格高，走廊接不上");
             com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 2);
             int orphanCellsBefore = com.trialportal.arena.ArenaService.usedCellCount(server);
             com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 1);
@@ -187,6 +220,48 @@ public final class TrialSelfTest
                     "落点安全搜索应把悬空坐标拉回平台上，而不是原地不动");
         }
 
+        // 隔间编号按玩法分段：闯关与爬塔永不共用同一块地（用户报的串怪面之一）
+        TrialManager accounting = TrialManager.get(server);
+        java.util.UUID playerA = java.util.UUID.nameUUIDFromBytes("trial_portal:selftest:a".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        java.util.UUID playerB = java.util.UUID.nameUUIDFromBytes("trial_portal:selftest:b".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int cellA = accounting.allocateCell(playerA, TrialMode.CHALLENGE, null);
+        int cellB = accounting.allocateCell(playerB, TrialMode.TOWER, null);
+        int cellC = accounting.allocateCell(playerA, TrialMode.TRIAL, null);
+        check(failures, cellA >= TrialMode.CHALLENGE.cellBase() && cellA < TrialMode.CHALLENGE.cellBase() + 1000
+                        && cellB >= TrialMode.TOWER.cellBase() && cellB < TrialMode.TOWER.cellBase() + 1000
+                        && cellC >= TrialMode.TRIAL.cellBase(),
+                "三种玩法的隔间要各占一段编号（闯关 " + TrialMode.CHALLENGE.cellBase() + " / 爬塔 "
+                        + TrialMode.TOWER.cellBase() + " / 试炼 " + TrialMode.TRIAL.cellBase()
+                        + "），实际 " + cellA + "、" + cellB + "、" + cellC);
+        check(failures, cellA != cellB && cellB != cellC && cellA != cellC,
+                "同一时间不同玩法不能拿到同一块地：实际 " + cellA + " / " + cellB + " / " + cellC);
+        // 换玩法时旧编号必须从记账里彻底消失——只覆盖不拆，那一间就没人认领了（会串到别人头上）
+        check(failures, accounting.cellOf(playerA) == cellC && accounting.cellOf(playerB) == cellB
+                        && !accounting.cellsSnapshot().containsValue(cellA),
+                "playerA 从闯关换到试炼后，闯关那间（" + cellA + "）的记账没清干净："
+                        + accounting.cellsSnapshot());
+        // 回返点两条性质：①每次都覆盖（只在缺席时写＝第二次进门前站哪儿就丢了）②场地内的坐标不许写进来
+        accounting.recordHome(playerA, new TrialManager.HomePos(Level.OVERWORLD, 10.0D, 64.0D, 10.0D, 0.0F, 0.0F));
+        accounting.recordHome(playerA, new TrialManager.HomePos(Level.OVERWORLD, 20.0D, 65.0D, 20.0D, 0.0F, 0.0F));
+        TrialManager.HomePos overwritten = accounting.takeHome(playerA);
+        check(failures, overwritten != null && overwritten.x() == 20.0D && overwritten.y() == 65.0D,
+                "第二次 recordHome 没覆盖掉第一次的（回返点还停在 " + overwritten + "）");
+        accounting.recordHome(playerA, new TrialManager.HomePos(Level.OVERWORLD, 30.0D, 66.0D, 30.0D, 0.0F, 0.0F));
+        accounting.recordHome(playerA, new TrialManager.HomePos(com.trialportal.arena.ArenaService.ARENA,
+                0.0D, 64.0D, 0.0D, 0.0F, 0.0F));
+        TrialManager.HomePos home = accounting.takeHome(playerA);
+        check(failures, home != null && home.dimension() == Level.OVERWORLD && home.x() == 30.0D,
+                "场地坐标被当成回返点记进去了（回返点落在场地上＝把人送回虚空）：实际 " + home);
+        // 维度没加载时不许顺手销掉隔间编号：编号一丢，那间房就永远没人认领（开服清扫也找不到它）
+        accounting.recordHome(playerA, new TrialManager.HomePos(Level.OVERWORLD, 40.0D, 64.0D, 40.0D, 0.0F, 0.0F));
+        int held = accounting.cellOf(playerA);
+        com.trialportal.arena.ArenaService.releaseCell(null, accounting, playerA, held);
+        check(failures, accounting.cellOf(playerA) == held,
+                "维度没加载时 releaseCell 还是把编号 " + held + " 销了，那间房从此没人认领");
+        check(failures, accounting.takeHome(playerA) != null, "releaseCell 不该顺手把回返点也吃掉");
+        accounting.freeCell(playerA);
+        accounting.freeCell(playerB);
+
         // 越界判定：平台圈 ∪ 已建区域，两块都得算在场（真机踩过「刚开局就判成逃跑」）
         BlockPos platform = new BlockPos(0, 64, 0);
         net.minecraft.world.phys.AABB roomBox = new net.minecraft.world.phys.AABB(
@@ -199,6 +274,26 @@ public final class TrialSelfTest
                 "又远又不在任何已建区域里，才该判逃跑");
         check(failures, TrialManager.withinAllowedArea(new net.minecraft.world.phys.Vec3(0.5, 65, 900), platform, 0.0D, null),
                 "abandon_distance=0 表示永不判放弃");
+
+        // 资源副本库（CHALLENGE 玩法的唯一真相，不再从 trials/ 取波次）
+        check(failures, ChallengeLibrary.ids().size() >= 2,
+                "自带副本至少 2 份，实际 " + ChallengeLibrary.ids().size());
+        for (ChallengeDefinition challenge : ChallengeLibrary.ordered())
+        {
+            check(failures, challenge.difficulties.keySet().containsAll(ChallengeDefinition.DIFFICULTY_KEYS)
+                            && challenge.difficulties.size() == 3,
+                    challenge.id() + " 必须恰好三档难度 easy/normal/hard，实际 " + challenge.difficulties.keySet());
+            ChallengeDefinition.Difficulty easy = challenge.difficulty("easy");
+            ChallengeDefinition.Difficulty hard = challenge.difficulty("hard");
+            check(failures, easy != null && hard != null && hard.mobCap > easy.mobCap
+                            && hard.healthMultiplier >= easy.healthMultiplier,
+                    challenge.id() + " 的 hard 要比 easy 更凶（上限与血量倍率都要更高）");
+            check(failures, challenge.defaultDifficulty() != null, challenge.id() + " 要能取到默认难度");
+        }
+        check(failures, "normal".equals(ChallengeLibrary.normalizeDifficulty(null))
+                        && "hard".equals(ChallengeLibrary.normalizeDifficulty(" HARD "))
+                        && ChallengeLibrary.normalizeDifficulty("nightmare") == null,
+                "难度键归一化：缺省=normal、大小写与空格要容忍、不认识的键要返回 null 而不是猜");
 
         // 房间库与站怪点
         check(failures, RoomLibrary.ids().size() >= 5, "自带房间至少 5 间，实际 " + RoomLibrary.ids().size());
@@ -269,8 +364,25 @@ public final class TrialSelfTest
                             "拆完隔间还得把建房时强制加载的区块还回去，否则这些区块永远挂在内存里");
                     // 清场尺寸必须向房间库要：今天的房窄不代表以后也窄
                     probeTeardown(arenaLevel, failures);
+                    // 遗留怪：开局前那次是兜底，真正的清怪时机是离场拆台那一次（整场区块一直强制加载，看得见）。
+                    // 这里只验盒子盖得住地；怪真被清掉没有要等世界真的 tick 起来才查得到（见 onServerTick 的延后段）。
+                    BlockPos sweepOrigin = com.trialportal.arena.ArenaService.cellOrigin(8);
+                    com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, sweepOrigin, TrialMode.CHALLENGE);
+                    net.minecraft.world.phys.AABB sweepBox = com.trialportal.arena.ArenaService.cellBox(8, 0);
+                    net.minecraft.world.phys.AABB deepBox = com.trialportal.arena.ArenaService.cellBox(8, 44);
+                    check(failures, sweepBox.contains(sweepOrigin.getX() + 0.5D, sweepOrigin.getY() + 1.0D,
+                                    sweepOrigin.getZ() + 0.5D)
+                                    && sweepBox.contains(sweepOrigin.getX() - radius, sweepOrigin.getY(),
+                                    sweepOrigin.getZ() + radius),
+                            "扫怪盒子没盖住平台本身（中心或台沿落在盒子外）");
+                    check(failures, deepBox.contains(sweepOrigin.getX(), sweepOrigin.getY() + 1,
+                                    sweepOrigin.getZ() + 44 + radius),
+                            "扫怪盒子没跟着进深长大：建到 44 格外的房里的怪会漏网");
+                    com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 8);
                     // 真离场走的是 releaseCell(uuid)，进深要从记账里来——真机就是因为这里漏传留下一整间房
                     probeReleaseByAccounting(arenaLevel, server, failures, radius);
+                    // 换玩法（编号跨段）时旧那间必须真被拆掉，不是只把记账覆盖掉
+                    probeModeSwitchReclaimsOldCell(arenaLevel, server, failures, radius);
                 }
             }
         }
@@ -364,6 +476,27 @@ public final class TrialSelfTest
                         .contains("projectile"),
                 "从 NBT 恢复后免疫列表应还在");
 
+        // 副本难度倍率：必须是 permanent modifier，否则区块重载后血量掉回去
+        Vindicator dungeonMob = new Vindicator(EntityType.VINDICATOR, level);
+        double plainHealth = dungeonMob.getMaxHealth();
+        TrialManager.boostHealth(dungeonMob, 2.0D);
+        check(failures, Math.abs(dungeonMob.getMaxHealth() - plainHealth * 2.0D) < 0.51D,
+                "health_multiplier=2 应把上限从 " + plainHealth + " 抬到 " + plainHealth * 2.0D
+                        + "，实际 " + dungeonMob.getMaxHealth());
+        TrialManager.boostHealth(dungeonMob, 2.0D);
+        check(failures, Math.abs(dungeonMob.getMaxHealth() - plainHealth * 2.0D) < 0.51D,
+                "同一倍率重复应用不该叠层（修饰符按名字幂等）");
+        CompoundTag dungeonSaved = new CompoundTag();
+        dungeonMob.saveWithoutId(dungeonSaved);
+        Vindicator dungeonRestored = new Vindicator(EntityType.VINDICATOR, level);
+        dungeonRestored.load(dungeonSaved);
+        check(failures, Math.abs(dungeonRestored.getMaxHealth() - dungeonMob.getMaxHealth()) < 0.51D,
+                "重载后血量倍率应还在（副本怪的难度不能因为区块卸载而失效）");
+        dungeonMob.discard();
+        check(failures, TrialMode.CHALLENGE.isSustained() && !TrialMode.TRIAL.isSustained()
+                        && !TrialMode.TOWER.isSustained(),
+                "只有闯关是「不计波次、持续补充」的玩法");
+
         int interval = TrialConfig.GENERAL_TICK_INTERVAL.get();
         check(failures, interval >= 1, "tick_interval 至少为 1");
         boss.discard();
@@ -410,6 +543,28 @@ public final class TrialSelfTest
                 if (!level.getBlockState(origin.offset(dx, 0, dz)).isAir())
                 {
                     count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    /** 台面范围内还站着多少个功能终端（传送门 / 返回）。 */
+    private static int countTerminals(ServerLevel level, BlockPos origin, int radius)
+    {
+        int count = 0;
+        for (int dx = -radius; dx <= radius; dx++)
+        {
+            for (int dz = -radius; dz <= radius; dz++)
+            {
+                for (int dy = 1; dy <= 2; dy++)
+                {
+                    var block = level.getBlockState(origin.offset(dx, dy, dz)).getBlock();
+                    if (block instanceof TrialPortalBlock
+                            || block instanceof com.trialportal.block.ArenaExitBlock)
+                    {
+                        count++;
+                    }
                 }
             }
         }
@@ -470,6 +625,30 @@ public final class TrialSelfTest
      * 走真离场的那条路：{@code releaseCell(arena, manager, uuid, cell)}，进深从记账里读。
      * 真机就是栽在这里——调用点各自传 reach，漏传一次就在虚空里留下一整间房外加 force 着的区块。
      */
+    /**
+     * 换玩法要跨编号段（闯关 1 起、试炼 2001 起）。旧编号要是只被 {@code put} 覆盖掉，记账里就再没人
+     * 记得那儿有一间房：平台留在虚空里，而那个编号重新变成"空闲"，下一批人里谁分到它就会走进别人的旧场地。
+     * 这条只认方块——实体在无头门里查不到（见 {@link #onServerStarted} 的说明）。
+     */
+    private static void probeModeSwitchReclaimsOldCell(ServerLevel arenaLevel, MinecraftServer server,
+                                                        List<String> failures, int radius)
+    {
+        TrialManager manager = TrialManager.get(server);
+        java.util.UUID player = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:swap".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int oldCell = manager.allocateCell(player, TrialMode.CHALLENGE, null);
+        BlockPos oldOrigin = com.trialportal.arena.ArenaService.cellOrigin(oldCell);
+        com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, oldOrigin, TrialMode.CHALLENGE);
+        int built = countPlatformBlocks(arenaLevel, oldOrigin, radius);
+        int newCell = manager.allocateCell(player, TrialMode.TRIAL, arenaLevel);
+        check(failures, built > 0 && newCell != oldCell,
+                "探针没能造出旧隔间（建了 " + built + " 块，跨段新编号 " + newCell + "，旧编号 " + oldCell + "）");
+        int leftAfter = countPlatformBlocks(arenaLevel, oldOrigin, radius);
+        check(failures, leftAfter == 0,
+                "换玩法后旧隔间 " + oldCell + " 还留着 " + leftAfter + " 块平台：编号会被重新分给别的玩家");
+        manager.freeCell(player);
+    }
+
     private static void probeReleaseByAccounting(ServerLevel arenaLevel, MinecraftServer server,
                                                  List<String> failures, int radius)
     {

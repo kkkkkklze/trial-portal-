@@ -34,6 +34,12 @@ public class TrialSession
     public final BlockPos origin;
     /** 场地隔间编号（0 = 大厅）。生成中心与回返判定都以 origin 为准，cell 只用于拆台与找回隔间。 */
     public int cell;
+    /**
+     * 开局那一刻钉住的玩法。必须存下来：副本会话的 {@code definitionId} 是 {@code challenges/} 的 id，
+     * 拿它去 {@code TrialLibrary} 反查永远得到 null——死亡与传送门那两条路以前就是这么整段跳过的
+     * （人死了既不拆台也不清怪，配置 CHALLENGE_DEATH_CLEARS_PENDING 从来没生效过）。
+     */
+    public TrialMode mode;
 
     /** 已完成波数 = 当前波下标（0 起）。爬塔时它等价于「已通过的层数」。 */
     public int waveIndex;
@@ -57,6 +63,21 @@ public class TrialSession
     public net.minecraft.world.phys.AABB region;
     /** 沿 +Z 方向已建的进深（相对隔间原点），拆场与强制加载范围都按它算。 */
     public int reach;
+
+    /** 资源副本 ID（只有 CHALLENGE 玩法有值）。 */
+    @Nullable
+    public String challengeId;
+    /** 本局难度键（easy/normal/hard）。 */
+    @Nullable
+    public String difficulty;
+    /** 副本剩余 tick；到点统一结算。 */
+    public int remainingTicks;
+    /** 距离下一次补充怪的冷却 tick。 */
+    public int respawnCooldown;
+    /** 本局已击杀数（只用于播报与 status）。 */
+    public int kills;
+    /** 本局的生成点/怪表轮询游标。必须按会话存：放在 manager 上就是全场共用，两个人同时开怪会互相推进落点。 */
+    public int spawnCursor;
 
     public TrialSession(UUID playerId, String playerName, String definitionId, ResourceKey<Level> dimension, BlockPos origin)
     {

@@ -33,6 +33,7 @@ public final class TrialConfig
 
     public static final ForgeConfigSpec.IntValue ARENA_CELL_SPACING;
     public static final ForgeConfigSpec.IntValue ARENA_PLATFORM_RADIUS;
+    public static final ForgeConfigSpec.IntValue ARENA_FENCE_HEIGHT;
     public static final ForgeConfigSpec.ConfigValue<String> ARENA_PLATFORM_BLOCK;
     public static final ForgeConfigSpec.BooleanValue ARENA_CLEAR_CELL_ON_END;
 
@@ -108,6 +109,10 @@ public final class TrialConfig
         ARENA_PLATFORM_RADIUS = BUILDER
                 .comment("平台半径（格），大厅与隔间共用；0 表示只放终端方块周围 1 格")
                 .defineInRange("platform_radius", 10, 1, 48);
+        ARENA_FENCE_HEIGHT = BUILDER
+                .comment("台面围栏高度（格，玻璃）。怪能跳 1 格，2 格就关得住，默认 3 留余量："
+                        + "矮了怪会顺着台沿走出场地、也被玩家轻易打下虚空。朝房间那一侧的门洞同样高")
+                .defineInRange("fence_height", 3, 1, 8);
         ARENA_PLATFORM_BLOCK = BUILDER
                 .comment("平台材质（方块 ID）")
                 .define("platform_block", "minecraft:polished_blackstone_bricks");

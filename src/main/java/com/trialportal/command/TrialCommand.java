@@ -2,12 +2,15 @@ package com.trialportal.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.trialportal.boss.BossAffix;
 import com.trialportal.boss.BossAffixLibrary;
 import com.trialportal.boss.PlayerProfile;
 import com.trialportal.block.entity.TrialPortalBlockEntity;
+import com.trialportal.trial.ChallengeDefinition;
+import com.trialportal.trial.ChallengeLibrary;
 import com.trialportal.trial.TrialDefinition;
 import com.trialportal.trial.TrialLibrary;
 import com.trialportal.trial.TrialManager;
@@ -55,7 +58,61 @@ public final class TrialCommand
                         .then(Commands.literal("enter").executes(TrialCommand::enter))
                         .then(Commands.literal("home").executes(TrialCommand::home)))
                 .then(Commands.literal("arena")
-                        .then(Commands.literal("info").executes(TrialCommand::arenaInfo))));
+                        .then(Commands.literal("info").executes(TrialCommand::arenaInfo)))
+                .then(Commands.literal("challenge")
+                        .then(Commands.literal("list").executes(TrialCommand::challengeList))
+                        .then(Commands.literal("start")
+                                .then(Commands.argument("challenge", ResourceLocationArgument.id())
+                                        .executes(TrialCommand::challengeStartDefault)
+                                        .then(Commands.argument("difficulty", StringArgumentType.word())
+                                                .executes(TrialCommand::challengeStart))))));
+    }
+
+    private static int challengeList(CommandContext<CommandSourceStack> context)
+    {
+        var source = context.getSource();
+        source.sendSuccess(() -> Component.literal("已加载 " + ChallengeLibrary.ids().size() + " 份资源副本：")
+                .withStyle(ChatFormatting.GOLD), false);
+        for (ChallengeDefinition challenge : ChallengeLibrary.ordered())
+        {
+            source.sendSuccess(() -> Component.literal("  " + challenge.id() + " · " + challenge.displayNameOrDefault()
+                            + " · 时限 " + challenge.durationTicks / 20 + " 秒 · 难度 "
+                            + String.join("/", ChallengeDefinition.DIFFICULTY_KEYS))
+                    .withStyle(ChatFormatting.GRAY), false);
+        }
+        return ChallengeLibrary.ids().size();
+    }
+
+    /** 不带难度参数时走默认档：与其去探测参数表（1.20.1 的 brigadier 没有 hasArgument），不如两个入口。 */
+    private static int challengeStartDefault(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        return startChallenge(context, "normal");
+    }
+
+    private static int challengeStart(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        return startChallenge(context, StringArgumentType.getString(context, "difficulty"));
+    }
+
+    private static int startChallenge(CommandContext<CommandSourceStack> context, String requested)
+            throws CommandSyntaxException
+    {
+        ServerPlayer player = context.getSource().getPlayerOrException();
+        ResourceLocation id = ResourceLocationArgument.getId(context, "challenge");
+        ChallengeDefinition challenge = ChallengeLibrary.get(id.toString());
+        if (challenge == null)
+        {
+            context.getSource().sendFailure(Component.literal("找不到副本 " + id));
+            return 0;
+        }
+        String difficulty = ChallengeLibrary.normalizeDifficulty(requested);
+        if (difficulty == null)
+        {
+            context.getSource().sendFailure(Component.literal("难度只允许 "
+                    + String.join("/", ChallengeDefinition.DIFFICULTY_KEYS) + "，写的是 " + requested));
+            return 0;
+        }
+        return com.trialportal.arena.ArenaService.beginDungeon(player, challenge, difficulty) ? 1 : 0;
     }
 
     private static int list(CommandContext<CommandSourceStack> context)

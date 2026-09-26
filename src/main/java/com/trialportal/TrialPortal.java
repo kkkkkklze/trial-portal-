@@ -13,6 +13,8 @@ import com.trialportal.registry.ModBlockEntities;
 import com.trialportal.registry.ModBlocks;
 import com.trialportal.registry.ModCreativeTabs;
 import com.trialportal.registry.ModItems;
+import com.trialportal.trial.ChallengeDefinition;
+import com.trialportal.trial.ChallengeLibrary;
 import com.trialportal.trial.TrialDefinition;
 import com.trialportal.trial.TrialLibrary;
 import net.minecraftforge.common.MinecraftForge;
@@ -45,6 +47,7 @@ public class TrialPortal
         ModCreativeTabs.TABS.register(modEventBus);
 
         modEventBus.addListener(this::commonSetup);
+        com.trialportal.network.TrialNetwork.register();
 
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, TrialConfig.SPEC);
 
@@ -62,6 +65,8 @@ public class TrialPortal
                 (id, affix) -> affix.resolve(id), BossAffixLibrary::replace));
         event.addListener(new JsonReloadListener<>("arena_rooms", RoomDefinition.class, "房间",
                 (id, room) -> room.resolve(id), RoomLibrary::replace));
+        event.addListener(new JsonReloadListener<>("challenges", ChallengeDefinition.class, "资源副本",
+                (id, challenge) -> challenge.resolve(id), ChallengeLibrary::replace));
     }
 
     private void onRegisterCommands(RegisterCommandsEvent event)

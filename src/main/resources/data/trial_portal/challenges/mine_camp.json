@@ -1,0 +1,54 @@
+{
+  "comment": "资源副本示例一：矿洞营地。不计波次，进场景后怪持续补到上限，杀一只攒一份矿。",
+  "display_name": "矿洞营地",
+  "icon_item": "minecraft:iron_pickaxe",
+  "order": 10,
+  "duration_ticks": 6000,
+  "difficulties": {
+    "easy": {
+      "display_name": "浅层",
+      "mobs": [
+        {"entity": "minecraft:zombie", "count": 2},
+        {"entity": "minecraft:skeleton", "count": 1}
+      ],
+      "mob_cap": 8,
+      "spawn_batch": 2,
+      "spawn_interval_ticks": 160,
+      "health_multiplier": 1.0,
+      "kill_rewards": [
+        {"item": "minecraft:coal", "count": 1}
+      ]
+    },
+    "normal": {
+      "display_name": "中层",
+      "mobs": [
+        {"entity": "minecraft:zombie", "count": 3},
+        {"entity": "minecraft:skeleton", "count": 2}
+      ],
+      "mob_cap": 14,
+      "spawn_batch": 3,
+      "spawn_interval_ticks": 120,
+      "health_multiplier": 1.4,
+      "kill_rewards": [
+        {"item": "minecraft:coal", "count": 1},
+        {"item": "minecraft:raw_iron", "count": 1}
+      ]
+    },
+    "hard": {
+      "display_name": "深层",
+      "mobs": [
+        {"entity": "minecraft:zombie", "count": 4},
+        {"entity": "minecraft:skeleton", "count": 2},
+        {"entity": "minecraft:cave_spider", "count": 2}
+      ],
+      "mob_cap": 20,
+      "spawn_batch": 4,
+      "spawn_interval_ticks": 90,
+      "health_multiplier": 2.0,
+      "kill_rewards": [
+        {"item": "minecraft:raw_iron", "count": 2},
+        {"item": "minecraft:raw_gold", "count": 1}
+      ]
+    }
+  }
+}

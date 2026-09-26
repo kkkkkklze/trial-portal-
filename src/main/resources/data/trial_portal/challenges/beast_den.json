@@ -1,0 +1,53 @@
+{
+  "comment": "资源副本示例二：兽穴。掉皮革/线/骨，验证「不同副本给不同奖励」。",
+  "display_name": "兽穴",
+  "icon_item": "minecraft:leather",
+  "order": 20,
+  "duration_ticks": 4800,
+  "difficulties": {
+    "easy": {
+      "display_name": "外围",
+      "mobs": [
+        {"entity": "minecraft:spider", "count": 2}
+      ],
+      "mob_cap": 8,
+      "spawn_batch": 2,
+      "spawn_interval_ticks": 150,
+      "health_multiplier": 1.0,
+      "kill_rewards": [
+        {"item": "minecraft:string", "count": 1}
+      ]
+    },
+    "normal": {
+      "display_name": "巢道",
+      "mobs": [
+        {"entity": "minecraft:spider", "count": 3},
+        {"entity": "minecraft:cave_spider", "count": 1}
+      ],
+      "mob_cap": 14,
+      "spawn_batch": 3,
+      "spawn_interval_ticks": 110,
+      "health_multiplier": 1.5,
+      "kill_rewards": [
+        {"item": "minecraft:string", "count": 2},
+        {"item": "minecraft:spider_eye", "count": 1}
+      ]
+    },
+    "hard": {
+      "display_name": "母穴",
+      "mobs": [
+        {"entity": "minecraft:cave_spider", "count": 3},
+        {"entity": "minecraft:spider", "count": 2},
+        {"entity": "minecraft:zombie_villager", "count": 1}
+      ],
+      "mob_cap": 20,
+      "spawn_batch": 4,
+      "spawn_interval_ticks": 80,
+      "health_multiplier": 2.2,
+      "kill_rewards": [
+        {"item": "minecraft:leather", "count": 1},
+        {"item": "minecraft:rotten_flesh", "count": 2}
+      ]
+    }
+  }
+}

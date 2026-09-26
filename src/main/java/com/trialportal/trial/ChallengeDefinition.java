@@ -1,0 +1,194 @@
+package com.trialportal.trial;
+
+import com.google.gson.annotations.SerializedName;
+import net.minecraft.resources.ResourceLocation;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 一份资源副本（闯关）：同一套玩法的三种难度写在一起。
+ * <p>
+ * 与 {@link TrialDefinition} 的分工是刻意的——{@code trials/*.json} 管「按波推进」的玩法（试炼、爬塔），
+ * {@code challenges/*.json} 管「不计波次、持续补充、按杀计奖」的资源副本。一个玩法只有一份真相，
+ * 不做「同一模式两处都能配」那种迟早对不上的设计。
+ */
+public class ChallengeDefinition
+{
+    /** 三档难度的固定键：少一档直接判定义无效，不做「缺省回退」——那会让改配置的人以为生效了。 */
+    public static final List<String> DIFFICULTY_KEYS = List.of("easy", "normal", "hard");
+
+    @SerializedName("display_name")
+    public String displayName;
+
+    /** 界面上的图标物品（只影响观感，不参与玩法）。 */
+    @SerializedName("icon_item")
+    public String iconItem = "minecraft:chest";
+
+    /** 列表里的展示顺序，小的在前。 */
+    @SerializedName("order")
+    public int order;
+
+    /** 一局有多久（tick）。到时统一结算送出场，不做「超时失败」惩罚。 */
+    @SerializedName("duration_ticks")
+    public int durationTicks = 6000;
+
+    @SerializedName("difficulties")
+    public Map<String, Difficulty> difficulties = new LinkedHashMap<>();
+
+    private transient String resolvedId;
+
+    public String id()
+    {
+        return this.resolvedId == null ? "" : this.resolvedId;
+    }
+
+    public String displayNameOrDefault()
+    {
+        return this.displayName == null || this.displayName.isBlank() ? this.id() : this.displayName;
+    }
+
+    @Nullable
+    public Difficulty difficulty(@Nullable String key)
+    {
+        return key == null ? null : this.difficulties.get(key);
+    }
+
+    /** 默认难度：UI 与指令都没指定时用普通档。 */
+    public Difficulty defaultDifficulty()
+    {
+        Difficulty normal = this.difficulties.get("normal");
+        return normal != null ? normal : this.difficulties.get("easy");
+    }
+
+    /**
+     * @return null 表示通过；否则为失败原因（加载器会跳过这份定义并写日志）
+     */
+    @Nullable
+    public String resolve(String id)
+    {
+        if (this.durationTicks < 200)
+        {
+            return "duration_ticks 至少 200（10 秒），当前 " + this.durationTicks;
+        }
+        if (ResourceLocation.tryParse(this.iconItem) == null)
+        {
+            return "icon_item 不是合法物品 ID（" + this.iconItem + "）";
+        }
+        for (String key : DIFFICULTY_KEYS)
+        {
+            Difficulty difficulty = this.difficulties.get(key);
+            if (difficulty == null)
+            {
+                return "缺少难度 " + key + "（三档 easy/normal/hard 都要有）";
+            }
+            String error = difficulty.resolve(id + "#" + key);
+            if (error != null)
+            {
+                return error;
+            }
+        }
+        for (String key : this.difficulties.keySet())
+        {
+            if (!DIFFICULTY_KEYS.contains(key))
+            {
+                return "不认识难度 " + key + "（只允许 " + String.join("/", DIFFICULTY_KEYS) + "）";
+            }
+        }
+        this.resolvedId = id;
+        if (this.displayName == null || this.displayName.isBlank())
+        {
+            this.displayName = id;
+        }
+        return null;
+    }
+
+    /** 一档难度：怪群、补充节奏、上限量、以及「杀一只攒什么」。 */
+    public static class Difficulty
+    {
+        @SerializedName("display_name")
+        public String displayName;
+
+        @SerializedName("mobs")
+        public List<TrialDefinition.MobEntry> mobs = new ArrayList<>();
+
+        /** 同场上限：低于它才会继续补充。 */
+        @SerializedName("mob_cap")
+        public int mobCap = 12;
+
+        /** 每次补充几只。 */
+        @SerializedName("spawn_batch")
+        public int spawnBatch = 3;
+
+        @SerializedName("spawn_interval_ticks")
+        public int spawnIntervalTicks = 100;
+
+        /** 血量倍率（作用于每只怪的 max_health），1.0 = 不放大。 */
+        @SerializedName("health_multiplier")
+        public double healthMultiplier = 1.0D;
+
+        /** 杀一只往待结算池里加什么。空 = 这一档不给奖。 */
+        @SerializedName("kill_rewards")
+        public List<TrialDefinition.RewardEntry> killRewards = new ArrayList<>();
+
+        public String displayNameOrDefault(String key)
+        {
+            return this.displayName == null || this.displayName.isBlank() ? key : this.displayName;
+        }
+
+        @Nullable
+        public String resolve(String where)
+        {
+            if (this.mobs.isEmpty())
+            {
+                return where + " 的 mobs 是空的";
+            }
+            for (TrialDefinition.MobEntry entry : this.mobs)
+            {
+                if (entry == null || entry.entity == null || entry.entity.isBlank())
+                {
+                    return where + " 有一条 mob 缺 entity";
+                }
+                if (ResourceLocation.tryParse(entry.entity) == null)
+                {
+                    return where + " 的 entity 不是合法 ID（" + entry.entity + "）";
+                }
+                if (entry.count < 1)
+                {
+                    return where + " 的 " + entry.entity + " count 至少 1";
+                }
+            }
+            if (this.mobCap < 1 || this.spawnBatch < 1)
+            {
+                return where + " 的 mob_cap / spawn_batch 都要 ≥1";
+            }
+            if (this.spawnIntervalTicks < 20)
+            {
+                return where + " 的 spawn_interval_ticks 太小（" + this.spawnIntervalTicks + "），一秒内补好几次没意义";
+            }
+            if (this.healthMultiplier <= 0.0D)
+            {
+                return where + " 的 health_multiplier 要为正数";
+            }
+            for (TrialDefinition.RewardEntry reward : this.killRewards)
+            {
+                if (reward == null || reward.item == null || reward.item.isBlank())
+                {
+                    return where + " 的 kill_rewards 有条目缺 item";
+                }
+                if (ResourceLocation.tryParse(reward.item) == null)
+                {
+                    return where + " 的 kill_rewards item 不是合法 ID（" + reward.item + "）";
+                }
+                if (reward.count < 1)
+                {
+                    return where + " 的 kill_rewards " + reward.item + " count 至少 1";
+                }
+            }
+            return null;
+        }
+    }
+}
