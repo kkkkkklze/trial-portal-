@@ -1,0 +1,22 @@
+{
+  "display_name": "BOSS 圆厅",
+  "weight": 1.0,
+  "size": [
+    19,
+    8,
+    19
+  ],
+  "ceiling": true,
+  "pillars": 3,
+  "spawn_points": 2,
+  "mob_cap": 6,
+  "boss_room": true,
+  "cover": [
+    {
+      "block": "minecraft:crying_obsidian",
+      "count": 6
+    }
+  ],
+  "floor": "minecraft:polished_blackstone_bricks",
+  "wall": "minecraft:blackstone"
+}

@@ -1,0 +1,20 @@
+{
+  "display_name": "十字厅",
+  "weight": 1.0,
+  "size": [
+    13,
+    6,
+    13
+  ],
+  "pillars": 2,
+  "spawn_points": 6,
+  "mob_cap": 12,
+  "cover": [
+    {
+      "block": "minecraft:blackstone_wall",
+      "count": 5
+    }
+  ],
+  "floor": "minecraft:polished_blackstone_bricks",
+  "wall": "minecraft:blackstone"
+}

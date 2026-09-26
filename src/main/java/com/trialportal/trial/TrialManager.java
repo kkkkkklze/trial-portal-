@@ -5,6 +5,9 @@ import com.trialportal.boss.BossAffix;
 import com.trialportal.boss.BossAffixLibrary;
 import com.trialportal.boss.PlayerProfile;
 import com.trialportal.arena.ArenaService;
+import com.trialportal.arena.RoomBuilder;
+import com.trialportal.arena.RoomDefinition;
+import com.trialportal.arena.RoomLibrary;
 import com.trialportal.config.TrialConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -52,6 +55,7 @@ public class TrialManager extends SavedData
     private static final String DATA_NAME = "trial_portal";
     private static final String TAG_FLOORS = "tower_floors";
     private static final String TAG_CELLS = "arena_cells";
+    private static final String TAG_REACH = "arena_reach";
     private static final String TAG_HOMES = "arena_homes";
 
     public enum Outcome
@@ -67,8 +71,11 @@ public class TrialManager extends SavedData
     private final Map<UUID, List<TrialDefinition.RewardEntry>> carriedOver = new HashMap<>();
     /** 玩家 UUID → 已通过的最高层数。 */
     private final Map<UUID, Integer> towerFloors = new LinkedHashMap<>();
+    private int spawnCursor;
     /** 玩家 → 占用的隔间编号。与回返点一起进存档：否则重启后世界里留下没人认领的隔间平台。 */
     private final Map<UUID, Integer> arenaCells = new LinkedHashMap<>();
+    /** 玩家 → 本场沿 +Z 建出去的进深。拆场盒子的尺寸要看它，写进存档才不会在调用点上被"忘记传"。 */
+    private final Map<UUID, Integer> arenaReach = new LinkedHashMap<>();
     private final Map<UUID, HomePos> arenaHomes = new LinkedHashMap<>();
     private int tickCounter;
 
@@ -92,6 +99,21 @@ public class TrialManager extends SavedData
                 catch (IllegalArgumentException ignored)
                 {
                     // 坏 UUID 直接丢，别让整份存档读不出来
+                }
+            }
+        }
+        if (tag.contains(TAG_REACH))
+        {
+            CompoundTag reach = tag.getCompound(TAG_REACH);
+            for (String key : reach.getAllKeys())
+            {
+                try
+                {
+                    manager.arenaReach.put(UUID.fromString(key), reach.getInt(key));
+                }
+                catch (IllegalArgumentException ignored)
+                {
+                    // 同上
                 }
             }
         }
@@ -143,6 +165,10 @@ public class TrialManager extends SavedData
         this.arenaCells.forEach((uuid, cell) -> cells.putInt(uuid.toString(), cell));
         tag.put(TAG_CELLS, cells);
 
+        CompoundTag reach = new CompoundTag();
+        this.arenaReach.forEach((uuid, depth) -> reach.putInt(uuid.toString(), depth));
+        tag.put(TAG_REACH, reach);
+
         CompoundTag homes = new CompoundTag();
         this.arenaHomes.forEach((uuid, home) -> homes.put(uuid.toString(), home.toTag()));
         tag.put(TAG_HOMES, homes);
@@ -175,10 +201,27 @@ public class TrialManager extends SavedData
 
     public void freeCell(UUID playerId)
     {
+        this.arenaReach.remove(playerId);
         if (this.arenaCells.remove(playerId) != null)
         {
             this.setDirty();
         }
+    }
+
+    /** 本场往 +Z 建出去多远；拆场盒子按它算。 */
+    public void recordReach(UUID playerId, int reach)
+    {
+        Integer old = this.arenaReach.get(playerId);
+        if (old == null || old < reach)
+        {
+            this.arenaReach.put(playerId, reach);
+            this.setDirty();
+        }
+    }
+
+    public int reachOf(UUID playerId)
+    {
+        return this.arenaReach.getOrDefault(playerId, 0);
     }
 
     public Map<UUID, Integer> cellsSnapshot()
@@ -289,6 +332,17 @@ public class TrialManager extends SavedData
             session.waveIndex = floor - 1;
         }
 
+        if (definition.mode == TrialMode.TRIAL)
+        {
+            int normalRooms = Math.max(1, definition.finiteWaveCount() - 1);
+            session.roomPlan = RoomLibrary.plan(normalRooms, player.serverLevel().getRandom());
+            if (session.roomPlan == null)
+            {
+                TrialFeedback.failure(player, "房间池不够：需要至少 1 间普通房与 1 间 BOSS 房（data/"
+                        + "trial_portal/arena_rooms/）");
+                return false;
+            }
+        }
         this.sessions.put(player.getUUID(), session);
         List<TrialDefinition.RewardEntry> carried = this.carriedOver.remove(player.getUUID());
         if (carried != null && !carried.isEmpty())
@@ -404,7 +458,7 @@ public class TrialManager extends SavedData
         TrialFeedback.announce(player, "试炼失败",
                 clearsPending ? "累计奖励已清空" : "累计奖励留到下一场",
                 "[试炼] 你死了 · " + definition.displayName);
-        // 死亡由原版重生流程送玩家回去，这里只拆隔间、清 cell 记录
+        // 死亡由原版重生流程送玩家回去，这里只拆隔间、清 cell 记录（进深从记账里读）
         com.trialportal.arena.ArenaService.releaseCell(
                 com.trialportal.arena.ArenaService.level(player.server), this, player.getUUID(), session.cell);
     }
@@ -572,6 +626,10 @@ public class TrialManager extends SavedData
         session.aliveMobs.clear();
         session.bossAffixes.clear();
         session.phase = TrialSession.Phase.IN_WAVE;
+        if (session.roomPlan != null)
+        {
+            buildNextRoom(level, player, session);
+        }
 
         int budget = Math.min(TrialConfig.GENERAL_MAX_SPAWNS_PER_WAVE.get(), TrialConfig.GENERAL_MAX_ALIVE_MOBS.get());
         int spawned = 0;
@@ -599,6 +657,48 @@ public class TrialManager extends SavedData
         return true;
     }
 
+    /**
+     * 按房间序列把下一间房建出来，并把站怪点交给会话。房间沿 +Z 排开，中间用走廊接上，
+     * 所以"打完一波往里走一间"是玩家能感知的空间推进，而不是原地换一批怪。
+     */
+    private void buildNextRoom(ServerLevel level, ServerPlayer player, TrialSession session)
+    {
+        String roomId = session.roomPlan.get(Math.min(session.roomIndex, session.roomPlan.size() - 1));
+        RoomDefinition room = RoomLibrary.get(roomId);
+        if (room == null)
+        {
+            LOGGER.warn("[trial_portal] 房间 {} 不存在，本波退回随机扫位", roomId);
+            session.spawnPoints = null;
+            return;
+        }
+        session.roomIndex++;
+        int cellRadius = ArenaService.radius();
+        int cursor = session.reach > 0 ? session.reach : cellRadius + 2;
+        BlockPos origin = new BlockPos(session.origin.getX() - room.width() / 2, ArenaService.FLOOR_Y,
+                session.origin.getZ() + cursor);
+        if (session.reach > 0)
+        {
+            RoomBuilder.buildCorridor(level, session.origin.getX(), session.origin.getZ() + session.reach,
+                    origin.getZ() - 1, RoomBuilder.entryFloor(), RoomBuilder.entryWall());
+        }
+        RoomBuilder.Built built = RoomBuilder.build(level, room, origin, level.getRandom());
+        session.spawnPoints = built.spawnPoints();
+        session.region = session.region == null ? built.region() : join(session.region, built.region());
+        session.reach = origin.getZ() + room.depth() - session.origin.getZ();
+        recordReach(player.getUUID(), session.reach);
+        LOGGER.info("[trial_portal] 第 {} 波建房 {} @ {} 室内 {}x{}x{} 站怪点 {} 个 进深 {}",
+                session.waveNumber(), room.id(), origin.toShortString(),
+                room.width(), room.height(), room.depth(), built.spawnPoints().size(), session.reach);
+        TrialFeedback.chat(player, "往里进一间：" + room.displayNameOrDefault());
+    }
+
+    private static net.minecraft.world.phys.AABB join(net.minecraft.world.phys.AABB a, net.minecraft.world.phys.AABB b)
+    {
+        return new net.minecraft.world.phys.AABB(
+                Math.min(a.minX, b.minX), Math.min(a.minY, b.minY), Math.min(a.minZ, b.minZ),
+                Math.max(a.maxX, b.maxX), Math.max(a.maxY, b.maxY), Math.max(a.maxZ, b.maxZ));
+    }
+
     private boolean spawnOne(ServerLevel level, ServerPlayer owner, TrialSession session, TrialDefinition definition,
                              TrialDefinition.WaveContent content, TrialDefinition.MobEntry entry)
     {
@@ -624,7 +724,9 @@ public class TrialManager extends SavedData
         {
             applyNbt(mob, entry.nbt);
         }
-        Vec3 position = findSpawnPosition(level, session.origin, definition);
+        Vec3 position = session.spawnPoints == null || session.spawnPoints.isEmpty()
+                ? findSpawnPosition(level, session.origin, definition)
+                : Vec3.atBottomCenterOf(session.spawnPoints.get(spawnCursor++ % session.spawnPoints.size()));
         mob.setPos(position.x, position.y, position.z);
         mob.setYRot(level.getRandom().nextFloat() * 360.0F);
 
@@ -797,22 +899,42 @@ public class TrialManager extends SavedData
 
     private boolean isInsideArena(ServerPlayer player, TrialSession session, TrialDefinition definition)
     {
-        double limit = definition.abandonDistanceOrDefault();
-        if (limit == 0.0D)
+        if (!player.level().dimension().equals(session.dimension))
         {
-            return true;
+            return false; // 换维度 = 放弃
         }
+        return withinAllowedArea(player.position(), session.origin, abandonLimit(session, definition), session.region);
+    }
+
+    /** 越界判定的距离上限：0 = 永不判放弃，负数 = 用配置默认。 */
+    private double abandonLimit(TrialSession session, TrialDefinition definition)
+    {
+        double limit = definition.abandonDistanceOrDefault();
         if (limit < 0.0D)
         {
             limit = TrialConfig.GENERAL_DEFAULT_ABANDON_DISTANCE.get();
         }
-        ResourceKey<Level> arena = session.dimension;
-        if (!player.level().dimension().equals(arena))
+        return limit;
+    }
+
+    /**
+     * 允许活动的范围 = 以出发平台为圆心的距离圈 ∪ 已建房与走廊的矩形。
+     * 两块都要：试炼玩法沿 +Z 穿过几间房，只按半径判会把正常推进误判成逃跑；
+     * 只看已建区域又会把「站在台上右键继续下一波」的玩家判成逃跑（真机撞到的就是这个）。
+     */
+    static boolean withinAllowedArea(Vec3 position, BlockPos origin, double limit,
+                                     @Nullable net.minecraft.world.phys.AABB region)
+    {
+        if (limit == 0.0D)
         {
-            return false; // 换维度 = 放弃
+            return true;
         }
-        Vec3 center = Vec3.atCenterOf(session.origin);
-        return player.position().distanceToSqr(center) <= limit * limit;
+        Vec3 center = Vec3.atCenterOf(origin);
+        if (position.distanceToSqr(center) <= limit * limit)
+        {
+            return true;
+        }
+        return region != null && region.inflate(2.0D).contains(position);
     }
 
     private int intermissionFor(TrialDefinition definition, TrialSession session)

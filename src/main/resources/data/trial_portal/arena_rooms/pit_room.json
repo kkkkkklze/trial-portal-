@@ -1,0 +1,19 @@
+{
+  "display_name": "陷坑",
+  "weight": 0.7,
+  "size": [
+    13,
+    7,
+    13
+  ],
+  "spawn_points": 8,
+  "mob_cap": 14,
+  "cover": [
+    {
+      "block": "minecraft:blackstone_wall",
+      "count": 8
+    }
+  ],
+  "floor": "minecraft:polished_blackstone_bricks",
+  "wall": "minecraft:blackstone"
+}

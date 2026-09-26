@@ -1,6 +1,8 @@
 package com.trialportal.trial;
 
 import com.trialportal.TrialPortal;
+import com.trialportal.arena.RoomDefinition;
+import com.trialportal.arena.RoomLibrary;
 import com.trialportal.block.TrialPortalBlock;
 import com.trialportal.boss.BossAffix;
 import com.trialportal.boss.BossAffixLibrary;
@@ -30,6 +32,7 @@ import org.slf4j.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 服务端启动后的自驱断言（只在 {@code -Dtrial_portal.selfTest=true} 时跑，正常游戏不会触发）。
@@ -161,6 +164,15 @@ public final class TrialSelfTest
             int cellSecond = countPlatformBlocks(arenaLevel, cell, radius);
             check(failures, cellFirst > 0 && cellFirst == cellSecond,
                     "隔间重复建台必须幂等：第一次 " + cellFirst + " 块，第二次 " + cellSecond + " 块");
+            // 试炼模式的隔间要往外建房，围栏南侧必须留门，否则玩家清完一波回终端时被自家围栏挡在台面上
+            BlockPos trialCell = com.trialportal.arena.ArenaService.cellOrigin(2);
+            com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, trialCell, TrialMode.TRIAL);
+            check(failures, arenaLevel.getBlockState(trialCell.offset(0, 1, radius)).isAir(),
+                    "试炼隔间的围栏要在 +Z 那侧留出 3 格门（走廊同宽），实际是堵死的");
+            check(failures, !arenaLevel.getBlockState(trialCell.offset(0, 1, -radius)).isAir()
+                            && !arenaLevel.getBlockState(trialCell.offset(-radius, 1, 0)).isAir(),
+                    "门只开朝房间那一侧，其余三面仍要围住——门外就是虚空");
+            com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 2);
             int orphanCellsBefore = com.trialportal.arena.ArenaService.usedCellCount(server);
             com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 1);
             int afterRelease = countPlatformBlocks(arenaLevel, cell, radius);
@@ -173,6 +185,94 @@ public final class TrialSelfTest
             check(failures, com.trialportal.arena.ArenaService.findSafeLanding(arenaLevel, lobby.offset(0, 3, 0))
                             .getY() <= lobby.getY() + 1,
                     "落点安全搜索应把悬空坐标拉回平台上，而不是原地不动");
+        }
+
+        // 越界判定：平台圈 ∪ 已建区域，两块都得算在场（真机踩过「刚开局就判成逃跑」）
+        BlockPos platform = new BlockPos(0, 64, 0);
+        net.minecraft.world.phys.AABB roomBox = new net.minecraft.world.phys.AABB(
+                -1, 64, 11, 10, 71, 22); // 第一间房沿 +Z 建在 11~22，站在台上（z=0）离它 11 格
+        check(failures, TrialManager.withinAllowedArea(new net.minecraft.world.phys.Vec3(0.5, 65, 0.5), platform, 8.0D, roomBox),
+                "玩家站在出发平台中央、房已建在远处时不该被判成逃跑");
+        check(failures, TrialManager.withinAllowedArea(new net.minecraft.world.phys.Vec3(4.5, 65, 15), platform, 8.0D, roomBox),
+                "房内（超出半径但在已建区域里）应当算在场");
+        check(failures, !TrialManager.withinAllowedArea(new net.minecraft.world.phys.Vec3(0.5, 65, 90), platform, 8.0D, roomBox),
+                "又远又不在任何已建区域里，才该判逃跑");
+        check(failures, TrialManager.withinAllowedArea(new net.minecraft.world.phys.Vec3(0.5, 65, 900), platform, 0.0D, null),
+                "abandon_distance=0 表示永不判放弃");
+
+        // 房间库与站怪点
+        check(failures, RoomLibrary.ids().size() >= 5, "自带房间至少 5 间，实际 " + RoomLibrary.ids().size());
+        check(failures, !RoomLibrary.bossRooms().isEmpty(), "至少有一间 boss_room=true 的终点房");
+        check(failures, !RoomLibrary.normalRooms().isEmpty(), "至少有一间普通房");
+        List<String> plan = RoomLibrary.plan(2, server.overworld().getRandom());
+        check(failures, plan != null && plan.size() == 3, "规划 2 间普通房应得到 3 间（含终点房），实际 "
+                + (plan == null ? "null" : plan.size()));
+        if (plan != null)
+        {
+            RoomDefinition last = RoomLibrary.get(plan.get(plan.size() - 1));
+            check(failures, last != null && last.bossRoom, "序列最后一间必须是 BOSS 房");
+            for (String roomId : plan)
+            {
+                RoomDefinition room = RoomLibrary.get(roomId);
+                check(failures, room != null && room.spawnPointsAt(BlockPos.ZERO).size() == room.spawnPoints,
+                        roomId + " 声明的站怪点数与实算数要一致");
+            }
+            // 同一随机种子规划两次，结果应当一样（可复现性：玩家背板的前提）
+            List<String> once = RoomLibrary.plan(2, net.minecraft.util.RandomSource.create(1234L));
+            List<String> again = RoomLibrary.plan(2, net.minecraft.util.RandomSource.create(1234L));
+            check(failures, once != null && once.equals(again), "同种子规划必须可复现");
+
+            if (arenaLevel != null)
+            {
+                // 拿库里最宽的一间来验清场：只有它会越过平台半径，窄房验不出这个 bug
+                RoomDefinition room = RoomLibrary.widestRoom();
+                if (room == null)
+                {
+                    failures.add("取不到最宽的一间房，房间几何断言没跑");
+                }
+                else
+                {
+                    check(failures, room.width() == RoomLibrary.maxWidth(),
+                            "清场盒子的宽度口径应与库里最宽的房一致");
+                    BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(4);
+                    BlockPos roomOrigin = cellOrigin.offset(-room.width() / 2, 0,
+                            com.trialportal.arena.ArenaService.radius() + 4);
+                    com.trialportal.arena.RoomBuilder.Built built = com.trialportal.arena.RoomBuilder.build(
+                            arenaLevel, room, roomOrigin, net.minecraft.util.RandomSource.create(4321L));
+                    // 地板要和隔间平台同一层，否则走廊与房间差一格，玩家走进去会掉一下
+                    check(failures, isGround(arenaLevel, roomOrigin),
+                            "地板必须落在 origin.y 这一层（与大厅平台同约定），"
+                                    + room.id() + " @ " + roomOrigin.toShortString() + " 实际不是");
+                    int bad = 0;
+                    for (BlockPos point : built.spawnPoints())
+                    {
+                        if (!isGround(arenaLevel, point.below()) || !arenaLevel.getBlockState(point).isAir()
+                                || !arenaLevel.getBlockState(point.above()).isAir())
+                        {
+                            bad++;
+                        }
+                    }
+                    check(failures, bad == 0,
+                            room.id() + " 有 " + bad + " 个站怪点脚下不实心或头顶被挡，怪会卡进墙/悬空");
+                    check(failures,
+                            arenaLevel.getBlockState(roomOrigin.offset(room.width() / 2, 1, -1)).isAir(),
+                            "朝向走廊那一侧的门洞要真的空出来，否则玩家走不进这间房");
+                    int reach = roomOrigin.getZ() + room.depth() - cellOrigin.getZ();
+                    com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 4, reach);
+                    int left = countRoomBlocks(arenaLevel, roomOrigin, room);
+                    check(failures, left == 0, "结算清场没覆盖整间房，残留 " + left + " 块（最宽房 "
+                            + RoomLibrary.maxWidth() + "，平台半径 "
+                            + com.trialportal.arena.ArenaService.radius() + "）");
+                    check(failures, !hasForcedChunkIn(arenaLevel,
+                                    roomOrigin.offset(-1, 0, -1),
+                                    roomOrigin.offset(room.width(), 0, room.depth())),
+                            "拆完隔间还得把建房时强制加载的区块还回去，否则这些区块永远挂在内存里");
+                    // 清场尺寸必须向房间库要：今天的房窄不代表以后也窄
+                    probeTeardown(arenaLevel, failures);
+                    // 真离场走的是 releaseCell(uuid)，进深要从记账里来——真机就是因为这里漏传留下一整间房
+                    probeReleaseByAccounting(arenaLevel, server, failures, radius);
+                }
+            }
         }
 
         // 直接执行一遍 /tei trial list：比查指令树里有没有这个名字更硬
@@ -314,6 +414,129 @@ public final class TrialSelfTest
             }
         }
         return count;
+    }
+
+    /** 实心可站（1.20.1 没有 isSolidRenderable，用红石导体这一条判据）。 */
+    private static boolean isGround(ServerLevel level, BlockPos pos)    {
+        return level.getBlockState(pos).isRedstoneConductor(level, pos);
+    }
+
+    /**
+     * 造一间「比今天所有内容都大」的探针房，验证清场盒子会跟着房间库一起长。
+     * 只拿现有内容验会漏：今天的房刚好塞得进按平台半径算的盒子，那就等于什么都没验。
+     */
+    private static void probeTeardown(ServerLevel arenaLevel, List<String> failures)
+    {
+        Map<String, RoomDefinition> library = RoomLibrary.snapshot();
+        RoomDefinition probe = new RoomDefinition();
+        probe.size = List.of(31, 12, 21);
+        probe.spawnPoints = 8;
+        probe.mobCap = 24;
+        probe.ceiling = true;
+        probe.pillars = 2;
+        String error = probe.resolve("trial_portal:__probe_wide");
+        if (error != null)
+        {
+            failures.add("探针房没过自己的校验（" + error + "），清场尺寸断言等于没跑");
+            return;
+        }
+        try
+        {
+            Map<String, RoomDefinition> withProbe = new java.util.LinkedHashMap<>(library);
+            withProbe.put(probe.id(), probe);
+            RoomLibrary.replace(withProbe);
+            check(failures, RoomLibrary.maxWidth() == 31,
+                    "清场宽度应按库里最宽的房算，实际 " + RoomLibrary.maxWidth());
+            BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(5);
+            BlockPos origin = cellOrigin.offset(-probe.width() / 2, 0,
+                    com.trialportal.arena.ArenaService.radius() + 4);
+            com.trialportal.arena.RoomBuilder.build(arenaLevel, probe, origin,
+                    net.minecraft.util.RandomSource.create(777L));
+            int reach = origin.getZ() + probe.depth() - cellOrigin.getZ();
+            com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 5, reach);
+            int left = countRoomBlocks(arenaLevel, origin, probe);
+            check(failures, left == 0, "31 格宽的房拆完还剩 " + left + " 块——清场盒子没按房间库算");
+            check(failures, !hasForcedChunkIn(arenaLevel, origin.offset(-1, 0, -1),
+                            origin.offset(probe.width(), 0, probe.depth())),
+                    "探针房 force 的区块没还回去");
+        }
+        finally
+        {
+            RoomLibrary.replace(library);
+        }
+    }
+
+    /**
+     * 走真离场的那条路：{@code releaseCell(arena, manager, uuid, cell)}，进深从记账里读。
+     * 真机就是栽在这里——调用点各自传 reach，漏传一次就在虚空里留下一整间房外加 force 着的区块。
+     */
+    private static void probeReleaseByAccounting(ServerLevel arenaLevel, MinecraftServer server,
+                                                 List<String> failures, int radius)
+    {
+        RoomDefinition room = RoomLibrary.widestRoom();
+        if (room == null)
+        {
+            failures.add("没有可用房间，离场记账断言没跑");
+            return;
+        }
+        java.util.UUID probePlayer = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:reach".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        TrialManager manager = TrialManager.get(server);
+        BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(6);
+        java.util.Set<Long> forcedBefore = new java.util.HashSet<>(arenaLevel.getForcedChunks());
+        com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, cellOrigin, TrialMode.TRIAL);
+        BlockPos origin = cellOrigin.offset(-room.width() / 2, 0, radius + 4);
+        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, origin, net.minecraft.util.RandomSource.create(999L));
+        manager.recordReach(probePlayer, origin.getZ() + room.depth() - cellOrigin.getZ());
+        int recorded = manager.reachOf(probePlayer);
+        check(failures, recorded > 0, "进深应记在账上，而不是只活在会话对象里");
+        com.trialportal.arena.ArenaService.releaseCell(arenaLevel, manager, probePlayer, 6);
+        int left = countRoomBlocks(arenaLevel, origin, room);
+        check(failures, left == 0, "按记账进深离场仍没拆干净，最远那间房还剩 " + left + " 块（记进深 "
+                + recorded + "，拆台开关 " + com.trialportal.config.TrialConfig.ARENA_CLEAR_CELL_ON_END.get()
+                + "，房 @ " + origin.toShortString() + "）");
+        check(failures, manager.reachOf(probePlayer) == 0, "freeCell 应把进深一起销账");
+        // 建台 force 过的区块必须一个不剩地还回去：真机就是因为两边算法不一致，漏下一整列 chunk
+        java.util.Set<Long> leaked = new java.util.HashSet<>(arenaLevel.getForcedChunks());
+        leaked.removeAll(forcedBefore);
+        check(failures, leaked.isEmpty(),
+                "拆完之后场地里多出 " + leaked.size() + " 个仍被强制加载的区块（建台与拆台的 force 口径不一致）");
+    }
+
+    /** 这间房（含外墙与封顶）还剩多少非空气方块。 */
+    private static int countRoomBlocks(ServerLevel level, BlockPos origin, RoomDefinition room)
+    {
+        int count = 0;
+        for (int dx = -1; dx <= room.width(); dx++)
+        {
+            for (int dz = -1; dz <= room.depth(); dz++)
+            {
+                for (int dy = 0; dy <= room.height() + 1; dy++)
+                {
+                    if (!level.getBlockState(origin.offset(dx, dy, dz)).isAir())
+                    {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    private static boolean hasForcedChunkIn(ServerLevel level, BlockPos from, BlockPos to)
+    {
+        var forced = level.getForcedChunks();
+        for (int cx = from.getX() >> 4; cx <= to.getX() >> 4; cx++)
+        {
+            for (int cz = from.getZ() >> 4; cz <= to.getZ() >> 4; cz++)
+            {
+                if (forced.contains(net.minecraft.world.level.ChunkPos.asLong(cx, cz)))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** 属性基础值（1.20.1 的 LivingEntity 上没有这个便利方法，测试里自己取一次）。 */

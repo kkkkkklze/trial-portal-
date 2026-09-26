@@ -1,0 +1,19 @@
+{
+  "display_name": "小厅",
+  "weight": 1.2,
+  "size": [
+    9,
+    5,
+    9
+  ],
+  "spawn_points": 4,
+  "mob_cap": 8,
+  "cover": [
+    {
+      "block": "minecraft:polished_blackstone_wall",
+      "count": 3
+    }
+  ],
+  "floor": "minecraft:polished_blackstone_bricks",
+  "wall": "minecraft:blackstone"
+}

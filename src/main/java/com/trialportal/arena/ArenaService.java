@@ -44,7 +44,8 @@ import java.util.UUID;
 public final class ArenaService
 {
     public static final ResourceKey<Level> ARENA =
-            ResourceKey.create(Registries.DIMENSION, new ResourceLocation(TrialPortal.MODID, "arena"));
+            ResourceKey.create(Registries.DIMENSION,
+                    ResourceLocation.fromNamespaceAndPath(TrialPortal.MODID, "arena"));
 
     /** 平台所在层；玩家站的位置是这一层 +1。 */
     public static final int FLOOR_Y = 64;
@@ -163,27 +164,65 @@ public final class ArenaService
         releaseCell(arena, manager, uuid, cell);
     }
 
-    /** 拆掉这个玩家占的隔间（大厅永不拆）并清掉记账。 */
+    /** 拆掉这个玩家占的隔间（大厅永不拆）并清掉记账。进深从记账里取，不由调用点传——漏传一次就会留下一间房。 */
     public static void releaseCell(@Nullable ServerLevel arena, TrialManager manager, UUID playerId, int cell)
     {
+        int reach = manager.reachOf(playerId); // 先读进深：freeCell 会把它一起销掉
         manager.freeCell(playerId);
         if (arena == null || cell == LOBBY_CELL || !Boolean.TRUE.equals(TrialConfig.ARENA_CLEAR_CELL_ON_END.get()))
         {
             return;
         }
-        releaseCellAt(arena, cell);
+        releaseCellAt(arena, cell, reach);
     }
 
     public static void releaseCellAt(ServerLevel arena, int cell)
+    {
+        releaseCellAt(arena, cell, 0);
+    }
+
+    /**
+     * @param reach 试炼玩法沿 +Z 方向多建出来的进深（房间与走廊）；0 = 只有入口平台
+     */
+    public static void releaseCellAt(ServerLevel arena, int cell, int reach)
     {
         if (cell == LOBBY_CELL)
         {
             return;
         }
         BlockPos origin = cellOrigin(cell);
-        forceChunks(arena, origin); // 隔间可能整个没加载，不先加载就拆不干净
-        clearPlatform(arena, origin);
-        unforceChunks(arena, origin);
+        // 清场盒子要按房间里最大的那间算：房可以比平台宽、比默认高度高，走廊还往 +Z 接出去 reach 格。
+        // 只按平台半径清会把房间两侧外墙留在虚空里，并且把 RoomBuilder 强制加载的区块永久留在场上。
+        int halfWidth = cellHalfFootprint();
+        int topY = Math.max(10, RoomLibrary.maxHeight() + 2);
+        int depth = halfWidth + Math.max(0, reach) + 8;
+        BlockPos from = origin.offset(-halfWidth, -1, -halfWidth);
+        BlockPos to = origin.offset(halfWidth, topY, depth);
+        setRegionForced(arena, from, to, true);
+        for (BlockPos pos : BlockPos.betweenClosed(from, to))
+        {
+            if (arena.getBlockState(pos).isAir())
+            {
+                continue;
+            }
+            arena.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+        }
+        setRegionForced(arena, from, to, false);
+    }
+
+    private static void setRegionForced(ServerLevel level, BlockPos from, BlockPos to, boolean forced)
+    {
+        int cx0 = from.getX() >> 4;
+        int cx1 = to.getX() >> 4;
+        int cz0 = from.getZ() >> 4;
+        int cz1 = to.getZ() >> 4;
+        for (int cx = cx0; cx <= cx1; cx++)
+        {
+            for (int cz = cz0; cz <= cz1; cz++)
+            {
+                level.setChunkForced(cx, cz, forced);
+            }
+        }
     }
 
     /**
@@ -205,7 +244,7 @@ public final class ArenaService
         {
             if (manager.sessionOf(entry.getKey()) == null)
             {
-                releaseCellAt(arena, entry.getValue());
+                releaseCellAt(arena, entry.getValue(), manager.reachOf(entry.getKey()));
                 manager.freeCell(entry.getKey());
                 manager.takeHome(entry.getKey());
                 swept++;
@@ -244,7 +283,8 @@ public final class ArenaService
                 }
                 level.setBlock(pos, floor, Block.UPDATE_ALL);
                 BlockPos above = pos.above();
-                if (Math.max(Math.abs(dx), Math.abs(dz)) == r && level.getBlockState(above).isAir())
+                if (Math.max(Math.abs(dx), Math.abs(dz)) == r && level.getBlockState(above).isAir()
+                        && !isRoomGate(mode, dx, dz, r))
                 {
                     level.setBlock(above, Blocks.GLASS.defaultBlockState(), Block.UPDATE_ALL); // 围栏，防止一脚踩空掉虚空
                 }
@@ -262,6 +302,16 @@ public final class ArenaService
             placeTerminal(level, origin.offset(0, 1, -3), blockFor(mode));
             placeTerminal(level, origin.offset(0, 1, 3), ModBlocks.ARENA_EXIT.get().defaultBlockState());
         }
+    }
+
+    /**
+     * 试炼隔间要沿 +Z 往外建房，围栏得在南侧中间留 3 格宽的门（与走廊同宽），
+     * 否则玩家清完一波要回平台终端继续时，被自己家的围栏挡在台面上。
+     * 大厅与其他模式不开门：那里门外就是虚空，开门等于挖坑。
+     */
+    private static boolean isRoomGate(@Nullable TrialMode mode, int dx, int dz, int radius)
+    {
+        return mode == TrialMode.TRIAL && dz == radius && Math.abs(dx) <= 1;
     }
 
     private static void clearPlatform(ServerLevel level, BlockPos origin)
@@ -299,32 +349,24 @@ public final class ArenaService
         }
     }
 
+    /**
+     * 一个 cell 的横向清场/强制加载半径。建台时 force 与拆台时 unforce 必须走同一个算法，
+     * 两边各自换算一次就会差在区块边界上（真机就是这么漏下 chunk 的）。
+     */
+    private static int cellHalfFootprint()
+    {
+        return Math.max(radius() + 2, (RoomLibrary.maxWidth() + 3) / 2);
+    }
+
     /** 平台会跨区块，先把覆盖范围强制加载，否则 setBlock 只能铺到已加载的部分。 */
     private static void forceChunks(ServerLevel level, BlockPos origin)
     {
-        setForced(level, origin, true);
+        int half = cellHalfFootprint();
+        setRegionForced(level, origin.offset(-half, 0, -half), origin.offset(half, 0, half), true);
     }
 
-    private static void unforceChunks(ServerLevel level, BlockPos origin)
-    {
-        setForced(level, origin, false);
-    }
-
-    private static void setForced(ServerLevel level, BlockPos origin, boolean forced)
-    {
-        int span = (radius() >> 4) + 1;
-        int centerChunkX = origin.getX() >> 4;
-        int centerChunkZ = origin.getZ() >> 4;
-        for (int dx = -span; dx <= span; dx++)
-        {
-            for (int dz = -span; dz <= span; dz++)
-            {
-                level.setChunkForced(centerChunkX + dx, centerChunkZ + dz, forced);
-            }
-        }
-    }
-
-    private static BlockState platformBlock()
+    /** 平台与走廊同材质，配置只读这一处。 */
+    public static BlockState platformBlock()
     {
         ResourceLocation id = ResourceLocation.tryParse(TrialConfig.ARENA_PLATFORM_BLOCK.get());
         var block = id == null ? null : ForgeRegistries.BLOCKS.getValue(id);

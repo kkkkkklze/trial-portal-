@@ -1,6 +1,7 @@
 package com.trialportal.trial;
 
 import net.minecraft.core.BlockPos;
+import org.jetbrains.annotations.Nullable;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 
@@ -45,6 +46,17 @@ public class TrialSession
     public final List<String> bossAffixes = new ArrayList<>();
     /** 连续处于范围外的累计 tick；回到范围内清零。 */
     public int outsideTicks;
+    /** 试炼玩法的房间序列（最后一间固定是 BOSS 房）；其它玩法为 null。 */
+    public java.util.List<String> roomPlan;
+    /** 当前是第几间房（与 waveIndex 同步）。 */
+    public int roomIndex;
+    /** 当前房间的站怪点；null = 退回随机扫位。 */
+    public java.util.List<net.minecraft.core.BlockPos> spawnPoints;
+    /** 已经建出来的区域（含走廊），用于"别跑出场地"判定与拆场。 */
+    @Nullable
+    public net.minecraft.world.phys.AABB region;
+    /** 沿 +Z 方向已建的进深（相对隔间原点），拆场与强制加载范围都按它算。 */
+    public int reach;
 
     public TrialSession(UUID playerId, String playerName, String definitionId, ResourceKey<Level> dimension, BlockPos origin)
     {

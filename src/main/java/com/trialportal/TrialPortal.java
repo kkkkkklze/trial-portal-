@@ -3,6 +3,8 @@ package com.trialportal;
 import com.mojang.logging.LogUtils;
 import com.trialportal.boss.BossAffix;
 import com.trialportal.boss.BossAffixLibrary;
+import com.trialportal.arena.RoomDefinition;
+import com.trialportal.arena.RoomLibrary;
 import com.trialportal.block.SneakInteractBlock;
 import com.trialportal.command.TrialCommand;
 import com.trialportal.config.TrialConfig;
@@ -58,6 +60,8 @@ public class TrialPortal
                 (id, definition) -> definition.resolve(id), TrialLibrary::replace));
         event.addListener(new JsonReloadListener<>("boss_affixes", BossAffix.class, "BOSS 词条",
                 (id, affix) -> affix.resolve(id), BossAffixLibrary::replace));
+        event.addListener(new JsonReloadListener<>("arena_rooms", RoomDefinition.class, "房间",
+                (id, room) -> room.resolve(id), RoomLibrary::replace));
     }
 
     private void onRegisterCommands(RegisterCommandsEvent event)

@@ -2,6 +2,7 @@ package com.trialportal.tools;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.trialportal.arena.RoomDefinition;
 import com.trialportal.boss.BossAffix;
 import com.trialportal.trial.TrialDefinition;
 import net.minecraft.resources.ResourceLocation;
@@ -31,6 +32,7 @@ public final class TrialDataCheck
     private final List<String> problems = new ArrayList<>();
     private int checkedTrials;
     private int checkedAffixes;
+    private int checkedRooms;
 
     public static void main(String[] args) throws IOException
     {
@@ -38,8 +40,10 @@ public final class TrialDataCheck
         TrialDataCheck check = new TrialDataCheck();
         Map<String, BossAffix> affixes = check.loadAffixes(root.resolve("boss_affixes"));
         check.checkTrials(root.resolve("trials"), affixes);
+        check.checkRooms(root.resolve("arena_rooms"));
 
-        System.out.printf(Locale.ROOT, "词条：%d 条；试炼：%d 份%n", check.checkedAffixes, check.checkedTrials);
+        System.out.printf(Locale.ROOT, "词条：%d 条；试炼：%d 份；房间：%d 间%n",
+                check.checkedAffixes, check.checkedTrials, check.checkedRooms);
         if (check.problems.isEmpty())
         {
             System.out.println("checkTrialData 通过：没有字段缺失、没有失效引用、逐波逐层都能取到内容");
@@ -48,6 +52,55 @@ public final class TrialDataCheck
         System.out.println("checkTrialData 失败，共 " + check.problems.size() + " 处：");
         check.problems.forEach(problem -> System.out.println("  - " + problem));
         System.exit(1);
+    }
+
+    private void checkRooms(Path directory) throws IOException
+    {
+        int normal = 0;
+        int boss = 0;
+        for (Path file : jsonFiles(directory))
+        {
+            String id = idOf(directory, file);
+            RoomDefinition room = parse(file, id, RoomDefinition.class);
+            if (room == null)
+            {
+                continue;
+            }
+            checkedRooms++;
+            String error;
+            try
+            {
+                error = room.resolve(id);
+            }
+            catch (IllegalArgumentException exception)
+            {
+                error = exception.getMessage();
+            }
+            if (error != null)
+            {
+                problems.add(id + "（房间）：" + error);
+                continue;
+            }
+            if (room.bossRoom)
+            {
+                boss++;
+            }
+            else
+            {
+                normal++;
+            }
+            // 站怪点「声明数 == 实算数」这条不变量不在离线进程里查：碰 BlockPos 就会拉起
+            // net.minecraft.Util 的 logger，而工具 classpath 上 slf4j 与 log4j 桥接版本不匹配（见 docs/开发文档.md §8）。
+            // 它由 TrialSelfTest 在游戏进程里断言。
+        }
+        if (boss == 0)
+        {
+            problems.add("房间表里没有任何 boss_room=true 的房间，试炼玩法规划不出终点房");
+        }
+        if (normal == 0)
+        {
+            problems.add("房间表里没有任何普通房，试炼玩法规划不出前置房间");
+        }
     }
 
     private Map<String, BossAffix> loadAffixes(Path directory) throws IOException

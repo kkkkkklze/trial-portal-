@@ -1,0 +1,24 @@
+{
+  "display_name": "库房",
+  "weight": 0.8,
+  "size": [
+    11,
+    5,
+    11
+  ],
+  "ceiling": true,
+  "spawn_points": 5,
+  "mob_cap": 10,
+  "cover": [
+    {
+      "block": "minecraft:iron_bars",
+      "count": 4
+    },
+    {
+      "block": "minecraft:glowstone",
+      "count": 2
+    }
+  ],
+  "floor": "minecraft:polished_blackstone_bricks",
+  "wall": "minecraft:blackstone"
+}
