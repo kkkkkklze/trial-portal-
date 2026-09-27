@@ -37,6 +37,18 @@ public class TrialDefinition
     @SerializedName("abandon_distance")
     public Double abandonDistance;
 
+    /** 这份定义里所有怪的默认强度（波次级与单只怪级在它基础上再乘/再加）。 */
+    @SerializedName("strength")
+    public MobStrength strength;
+
+    /** 一波最多生成几只；0 = 用 {@code general.max_spawns_per_wave}。 */
+    @SerializedName("max_spawns_per_wave")
+    public int maxSpawnsPerWave;
+
+    /** 同时存活上限；0 = 用 {@code general.max_alive_mobs}。 */
+    @SerializedName("max_alive_mobs")
+    public int maxAliveMobs;
+
     @SerializedName("waves")
     public List<Wave> waves = new ArrayList<>();
 
@@ -74,6 +86,27 @@ public class TrialDefinition
         return this.abandonDistance == null ? DEFAULT_ABANDON_DISTANCE : this.abandonDistance;
     }
 
+    /** 一波的强度链：定义级 → 波次级。单只怪那一层由生成点再叠一次（{@code mob.strength}）。 */
+    @Nullable
+    public MobStrength strengthFor(@Nullable MobStrength waveLevel)
+    {
+        return MobStrength.combined(this.strength, waveLevel);
+    }
+
+    /** 一波生成几只的上限：这份定义没写就用全局配置。 */
+    public int spawnBudgetOrDefault()
+    {
+        return this.maxSpawnsPerWave > 0 ? this.maxSpawnsPerWave
+                : com.trialportal.config.TrialConfig.GENERAL_MAX_SPAWNS_PER_WAVE.get();
+    }
+
+    /** 同时存活上限：这份定义没写就用全局配置。 */
+    public int maxAliveOrDefault()
+    {
+        return this.maxAliveMobs > 0 ? this.maxAliveMobs
+                : com.trialportal.config.TrialConfig.GENERAL_MAX_ALIVE_MOBS.get();
+    }
+
     /**
      * @return null 表示通过；否则为失败原因（加载器会跳过这份定义并写日志）
      */
@@ -91,6 +124,19 @@ public class TrialDefinition
         if (this.isEndless() && this.scaling == null)
         {
             return "无尽模式必须有 scaling 规则";
+        }
+        String strengthError = this.strength == null ? null : this.strength.resolve("strength");
+        if (strengthError != null)
+        {
+            return strengthError;
+        }
+        if (this.maxSpawnsPerWave < 0 || this.maxSpawnsPerWave > 512)
+        {
+            return "max_spawns_per_wave 要在 0~512（0 = 用 general 里的默认），当前 " + this.maxSpawnsPerWave;
+        }
+        if (this.maxAliveMobs < 0 || this.maxAliveMobs > 512)
+        {
+            return "max_alive_mobs 要在 0~512（0 = 用 general 里的默认），当前 " + this.maxAliveMobs;
         }
         if (this.mode == TrialMode.TOWER && this.scaling == null)
         {
@@ -141,7 +187,12 @@ public class TrialDefinition
     {
         if (this.isEndless())
         {
-            return this.scaling == null ? null : this.scaling.build(waveIndex + 1);
+            WaveContent scaled = this.scaling == null ? null : this.scaling.build(waveIndex + 1);
+            if (scaled != null)
+            {
+                scaled.strength = MobStrength.combined(this.strength, scaled.strength);
+            }
+            return scaled;
         }
         Wave wave = waveIndex < this.waves.size() ? this.waves.get(waveIndex) : null;
         if (wave == null)
@@ -157,6 +208,8 @@ public class TrialDefinition
                 bossEntry.boss = true;
                 content.mobs.add(bossEntry);
                 content.rewards.addAll(this.boss.rewards);
+                content.affixPool = this.boss.affixPool;
+                content.strength = MobStrength.combined(this.strength, this.boss.strength);
                 return content;
             }
             return null;
@@ -166,6 +219,7 @@ public class TrialDefinition
         content.mobs.addAll(wave.mobs);
         content.rewards.addAll(wave.rewards);
         content.intermissionTicks = wave.intermissionTicks;
+        content.strength = MobStrength.combined(this.strength, wave.strength);
         return content;
     }
 
@@ -204,12 +258,21 @@ public class TrialDefinition
         @SerializedName("intermission_ticks")
         public int intermissionTicks = -1;
 
+        /** 这一波所有怪的强度（在定义级基础上再乘/再加）。 */
+        @SerializedName("strength")
+        public MobStrength strength;
+
         @Nullable
         String resolve()
         {
             if (this.mobs.isEmpty())
             {
                 return "mobs 为空";
+            }
+            String strengthError = this.strength == null ? null : this.strength.resolve("wave.strength");
+            if (strengthError != null)
+            {
+                return strengthError;
             }
             for (MobEntry mob : this.mobs)
             {
@@ -235,6 +298,10 @@ public class TrialDefinition
         @SerializedName("nbt")
         public String nbt;
 
+        /** 这只怪的强度（在波次级基础上再乘/再加）。 */
+        @SerializedName("strength")
+        public MobStrength strength;
+
         @SerializedName("boss")
         public boolean boss;
 
@@ -253,7 +320,19 @@ public class TrialDefinition
             {
                 return "mob " + this.entity + " 的 nbt 是空串";
             }
-            return null;
+            if (this.nbt != null && !this.nbt.isBlank())
+            {
+                // SNBT 写错了以前只有运行期一条 warn（等于这只怪的装备/名字静默没生效），现在就报错
+                try
+                {
+                    net.minecraft.nbt.TagParser.parseTag(this.nbt);
+                }
+                catch (Exception exception)
+                {
+                    return "mob " + this.entity + " 的 nbt 不是合法 SNBT：" + exception.getMessage();
+                }
+            }
+            return this.strength == null ? null : this.strength.resolve("mob " + this.entity + " 的 strength");
         }
 
         public ResourceLocation entityId()
@@ -298,6 +377,9 @@ public class TrialDefinition
         public int bossIndex = -1;
         /** 本波该用哪个词条池；null = 用全量已加载词条。 */
         public List<String> affixPool;
+        /** 本波的强度（定义级与波次/层段级已经乘好了）；单只怪那一层在生成点再叠。 */
+        @Nullable
+        public MobStrength strength;
     }
 
     public static class ScalingRule
@@ -331,6 +413,27 @@ public class TrialDefinition
 
         @SerializedName("boss_affix_pool")
         public List<String> bossAffixPool;
+
+        /**
+         * 逐层指定：某几层想固定出什么怪就写在这儿，没写的层继续走 {@code tiers} 的轮换。
+         * 光靠 tiers 做不到"第 12 层一定是 2 只苦力怕 + 1 只僵尸"——那里取的是
+         * {@code mobs.get(floor % size)}，出什么取决于列表顺序。
+         */
+        @SerializedName("floors")
+        public List<FloorOverride> floors = new ArrayList<>();
+
+        @Nullable
+        FloorOverride overrideFor(int floor)
+        {
+            for (FloorOverride override : this.floors)
+            {
+                if (override.floor == floor)
+                {
+                    return override;
+                }
+            }
+            return null;
+        }
 
         @Nullable
         String resolve()
@@ -369,6 +472,29 @@ public class TrialDefinition
             {
                 return "scaling.tiers 只覆盖到第 " + coveredTo + " 层，无尽爬塔会在那之上取不到内容";
             }
+            java.util.Set<Integer> seen = new java.util.HashSet<>();
+            for (FloorOverride override : this.floors)
+            {
+                if (override.floor < 1)
+                {
+                    return "scaling.floors 的 floor 要从 1 起（当前 " + override.floor + "）";
+                }
+                if (!seen.add(override.floor))
+                {
+                    // 用 Map 配就会撞这个：JSON 里同名的后一份静默覆盖前一份，谁都不知道
+                    return "scaling.floors 里第 " + override.floor + " 层配了两次";
+                }
+                if (override.floor > coveredTo)
+                {
+                    return "scaling.floors 第 " + override.floor + " 层超出 tiers 覆盖范围（到 " + coveredTo + "），"
+                            + "这一层取不到内容";
+                }
+                String error = override.resolve();
+                if (error != null)
+                {
+                    return error;
+                }
+            }
             return null;
         }
 
@@ -392,6 +518,11 @@ public class TrialDefinition
             if (tier == null)
             {
                 return null;
+            }
+            FloorOverride override = overrideFor(floor);
+            if (override != null)
+            {
+                return buildOverridden(floor, tier, override);
             }
             boolean bossFloor = this.bossEveryFloors > 0 && floor % this.bossEveryFloors == 0 && tier.boss;
             WaveContent content = new WaveContent();
@@ -421,6 +552,62 @@ public class TrialDefinition
                 content.rewards.addAll(this.rewards);
             }
             content.intermissionTicks = this.intermissionTicks;
+            // 按层线性放大与层段基准强度合成一份；定义级那一层由 waveFor 再乘一次
+            content.strength = MobStrength.combined(
+                    MobStrength.perFloor(healthMultiplier(floor), damageMultiplier(floor)), tier.strength);
+            return content;
+        }
+
+        /** 逐层指定的那一层：作者写什么就出什么，只继承层段的词条池与按层放大的倍率。 */
+        private WaveContent buildOverridden(int floor, Tier tier, FloorOverride override)
+        {
+            WaveContent content = new WaveContent();
+            content.floor = floor;
+            content.title = override.title == null ? "第 " + floor + " 层" : override.title;
+            for (MobEntry authored : override.mobs)
+            {
+                // 复制一份再交给状态机：模型对象是共用的，spawnOne 那边会往条目上打 boss 标记
+                MobEntry copy = new MobEntry();
+                copy.entity = authored.entity;
+                copy.count = authored.count;
+                copy.nbt = authored.nbt;
+                copy.strength = authored.strength;
+                copy.boss = authored.boss;
+                if (copy.boss)
+                {
+                    content.bossIndex = content.mobs.size();
+                }
+                content.mobs.add(copy);
+            }
+            boolean bossFloor;
+            if (override.boss != null)
+            {
+                bossFloor = override.boss;               // 这一层明确说了是不是 BOSS 层
+            }
+            else if (content.bossIndex >= 0)
+            {
+                bossFloor = true;                        // 作者在某条 mob 上直接标了 boss
+            }
+            else
+            {
+                bossFloor = this.bossEveryFloors > 0 && floor % this.bossEveryFloors == 0 && tier.boss;
+            }
+            if (bossFloor && content.bossIndex < 0 && !content.mobs.isEmpty())
+            {
+                content.mobs.get(0).boss = true;
+                content.bossIndex = 0;
+            }
+            content.affixPool = override.bossAffixPool != null ? override.bossAffixPool
+                    : (tier.bossAffixPool != null ? tier.bossAffixPool : this.bossAffixPool);
+            if (this.rewardEveryFloors > 0 && floor % this.rewardEveryFloors == 0)
+            {
+                content.rewards.addAll(this.rewards);
+            }
+            content.rewards.addAll(override.rewards);
+            content.intermissionTicks = this.intermissionTicks;
+            content.strength = MobStrength.combined(
+                    MobStrength.combined(MobStrength.perFloor(healthMultiplier(floor), damageMultiplier(floor)),
+                            tier.strength), override.strength);
             return content;
         }
 
@@ -435,9 +622,67 @@ public class TrialDefinition
         }
     }
 
-    public static class Tier
+    /** 一层的具体编排：写死的怪组，不走层段轮换。 */
+    public static class FloorOverride
     {
-        @SerializedName("from")
+        @SerializedName("floor")
+        public int floor;
+
+        @SerializedName("title")
+        public String title;
+
+        @SerializedName("mobs")
+        public List<MobEntry> mobs = new ArrayList<>();
+
+        /** null = 由 {@code boss_every_floors} 与层段的 boss 决定；true/false = 这一层明确说了算。 */
+        @SerializedName("boss")
+        public Boolean boss;
+
+        @SerializedName("boss_affix_pool")
+        public List<String> bossAffixPool;
+
+        /** 这一层额外发的奖励（与 {@code reward_every_floors} 那份叠加，不是替换）。 */
+        @SerializedName("rewards")
+        public List<RewardEntry> rewards = new ArrayList<>();
+
+        @SerializedName("strength")
+        public MobStrength strength;
+
+        @Nullable
+        String resolve()
+        {
+            if (this.mobs.isEmpty())
+            {
+                return "第 " + this.floor + " 层的 floors.mobs 为空";
+            }
+            if (this.boss != null && this.boss)
+            {
+                long flagged = this.mobs.stream().filter(mob -> mob.boss).count();
+                if (flagged > 1)
+                {
+                    return "第 " + this.floor + " 层标了 " + flagged + " 只 boss，一层只认一个 BOSS 条目";
+                }
+            }
+            String strengthError = this.strength == null ? null : this.strength.resolve(
+                    "第 " + this.floor + " 层的 strength");
+            if (strengthError != null)
+            {
+                return strengthError;
+            }
+            for (MobEntry mob : this.mobs)
+            {
+                String error = mob.resolve();
+                if (error != null)
+                {
+                    return "第 " + this.floor + " 层：" + error;
+                }
+            }
+            return null;
+        }
+    }
+
+    public static class Tier
+    {        @SerializedName("from")
         public int from;
 
         @SerializedName("to")
@@ -455,6 +700,10 @@ public class TrialDefinition
 
         @SerializedName("boss_affix_pool")
         public List<String> bossAffixPool;
+
+        /** 这个层段的基准强度（与按层线性放大的倍率相乘）。 */
+        @SerializedName("strength")
+        public MobStrength strength;
     }
 
     public static class BossSpec
@@ -475,12 +724,24 @@ public class TrialDefinition
         @SerializedName("rewards")
         public List<RewardEntry> rewards = new ArrayList<>();
 
+        /** 这只终局 BOSS 的强度（叠在定义级之上；终局波没有单独的 mob 条目可写）。 */
+        @SerializedName("strength")
+        public MobStrength strength;
+
         @Nullable
         String resolve()
         {
             if (this.entity == null || this.entity.isBlank())
             {
                 return "boss 缺少 entity";
+            }
+            if (this.strength != null)
+            {
+                String strengthError = this.strength.resolve("boss.strength");
+                if (strengthError != null)
+                {
+                    return strengthError;
+                }
             }
             for (RewardEntry reward : this.rewards)
             {

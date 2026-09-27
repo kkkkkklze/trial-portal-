@@ -24,8 +24,6 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.ai.attributes.AttributeInstance;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.item.ItemStack;
@@ -60,9 +58,6 @@ public class TrialManager extends SavedData
     private static final String TAG_REACH = "arena_reach";
     private static final String TAG_BUILT = "arena_built";
     private static final String TAG_HOMES = "arena_homes";
-    /** 副本补怪的落点范围：贴着隔间平台，不做配置项（越界判定与拆场盒子都按平台尺寸算）。 */
-    private static final double DUNGEON_SPAWN_RADIUS = 7.0D;
-    private static final double DUNGEON_SPAWN_HEIGHT = 2.0D;
 
     public enum Outcome
     {
@@ -839,13 +834,14 @@ public class TrialManager extends SavedData
         for (int i = 0; i < batch; i++)
         {
             TrialDefinition.MobEntry entry = difficulty.mobs.get(session.spawnCursor++ % difficulty.mobs.size());
-            Vec3 position = findSpawnPosition(level, session.origin, DUNGEON_SPAWN_RADIUS, DUNGEON_SPAWN_HEIGHT);
+            Vec3 position = findSpawnPosition(level, session.origin, difficulty.spawnRadiusOrDefault(),
+                    difficulty.spawnHeightOrDefault());
             Mob mob = createMobAt(level, entry, position);
             if (mob == null)
             {
                 continue;
             }
-            boostHealth(mob, difficulty.healthMultiplier);
+            MobStrengths.apply(mob, MobStrength.combined(difficulty.strength, entry.strength));
             if (mob instanceof Enemy)
             {
                 mob.setTarget(owner);
@@ -856,35 +852,6 @@ public class TrialManager extends SavedData
                 session.aliveMobs.add(mob.getUUID());
             }
         }
-    }
-
-    /**
-     * 难度血量倍率：走 permanent modifier（会随实体存档），不是 transient——
-     * 与 {@code BossAffixLibrary} 同一个道理，区块重载后临时修饰符会丢。
-     */
-    static void boostHealth(Mob mob, double multiplier)
-    {
-        if (multiplier <= 0.999D)
-        {
-            return;
-        }
-        net.minecraft.world.entity.ai.attributes.AttributeInstance instance =
-                mob.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
-        if (instance == null)
-        {
-            return;
-        }
-        String name = "trial_portal:dungeon_health";
-        UUID uuid = UUID.nameUUIDFromBytes(name.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        double base = instance.getBaseValue();
-        // 同 UUID 再加一次会直接抛 IllegalArgumentException（与 BossAffixLibrary 同一处坑），必须先查
-        if (instance.getModifier(uuid) == null)
-        {
-            instance.addPermanentModifier(new net.minecraft.world.entity.ai.attributes.AttributeModifier(uuid, name,
-                    base * (multiplier - 1.0D),
-                    net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADDITION));
-        }
-        mob.setHealth(mob.getMaxHealth());
     }
 
     private boolean beginWave(ServerPlayer player, TrialSession session, TrialDefinition definition)
@@ -909,7 +876,8 @@ public class TrialManager extends SavedData
             buildNextRoom(level, player, session);
         }
 
-        int budget = Math.min(TrialConfig.GENERAL_MAX_SPAWNS_PER_WAVE.get(), TrialConfig.GENERAL_MAX_ALIVE_MOBS.get());
+        // 上限优先看这份定义自己写的（JSON 里就能调），没写才用 general 的全局默认
+        int budget = Math.min(definition.spawnBudgetOrDefault(), definition.maxAliveOrDefault());
         int spawned = 0;
         for (TrialDefinition.MobEntry entry : content.mobs)
         {
@@ -997,10 +965,8 @@ public class TrialManager extends SavedData
         {
             return false;
         }
-        if (definition.isEndless() && content.floor > 0 && definition.scaling != null)
-        {
-            scaleForFloor(mob, definition, content.floor);
-        }
+        // 强度链：定义级 → 波次/层段级（已经乘在 content.strength 里）→ 单只怪级
+        MobStrengths.apply(mob, MobStrength.combined(content.strength, entry.strength));
         if (entry.boss)
         {
             prepareBoss(mob, definition, owner);
@@ -1119,24 +1085,6 @@ public class TrialManager extends SavedData
         {
             LOGGER.warn("[trial_portal] 合并 NBT 失败，已忽略：{}（{}）", snbt, exception.getMessage());
         }
-    }
-
-    private static void scaleForFloor(Mob mob, TrialDefinition definition, int floor)
-    {
-        TrialDefinition.ScalingRule scaling = definition.scaling;
-        double healthMultiplier = scaling.healthMultiplier(floor);
-        double damageMultiplier = scaling.damageMultiplier(floor);
-        if (healthMultiplier > 1.0D)
-        {
-            AttributeInstance health = mob.getAttribute(Attributes.MAX_HEALTH);
-            health.setBaseValue(health.getBaseValue() * healthMultiplier);
-        }
-        AttributeInstance damage = mob.getAttribute(Attributes.ATTACK_DAMAGE);
-        if (damageMultiplier > 1.0D && damage != null)
-        {
-            damage.setBaseValue(damage.getBaseValue() * damageMultiplier);
-        }
-        mob.setHealth(mob.getMaxHealth());
     }
 
     /** 生成位置是「扫」出来的：16 次随机水平取点，每次从初始高度上下各扫 5 格找落脚位。 */

@@ -11,13 +11,20 @@
         { "entity": "minecraft:zombie", "count": 3 }
       ],
       "rewards": [],
-      "intermission_ticks": 80
+      "intermission_ticks": 80,
+      "strength": { "health_multiplier": 1.2 }
     }
   ],
   "boss": {
     "entity": "minecraft:vindicator",
     "name": "星罗试炼·%s",
     "affix_count": 3,
+    "strength": {
+      "health_multiplier": 1.6,
+      "damage_multiplier": 1.2,
+      "armor_bonus": 2.0,
+      "knockback_resistance": 0.25
+    },
     "rewards": [
       { "item": "minecraft:nether_star", "count": 1 },
       { "item": "minecraft:diamond_block", "count": 2 }

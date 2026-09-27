@@ -113,6 +113,36 @@ public final class TrialSelfTest
             check(failures, bossFloor != null && bossFloor.bossIndex >= 0, "第 30 层应算出 BOSS 波");
             check(failures, bossFloor != null && bossFloor.affixPool != null && !bossFloor.affixPool.isEmpty(),
                     "层段专用 boss_affix_pool 应传到运行期（设计文档第 1 个坑）");
+            // 逐层指定（scaling.floors）：写死的那几层原样出，没写的层继续走层段轮换
+            TrialDefinition.WaveContent floor2 = tower.waveFor(1);
+            TrialDefinition.WaveContent floor3 = tower.waveFor(2);
+            TrialDefinition.WaveContent floor4 = tower.waveFor(3);
+            TrialDefinition.WaveContent floor10 = tower.waveFor(9);
+            check(failures, first != null && first.mobs.size() == 1
+                            && "minecraft:zombie".equals(first.mobs.get(0).entity)
+                            && first.mobs.get(0).count == 2,
+                    "第 1 层应固定 2 只僵尸（实际 " + describe(first) + "）");
+            check(failures, floor2 != null && floor2.mobs.size() == 2 && "第 2 层 · 两翼".equals(floor2.title),
+                    "第 2 层没按 floors 写的编排出来（实际 " + describe(floor2) + "）");
+            check(failures, floor3 != null && floor3.mobs.size() == 1
+                            && "minecraft:creeper".equals(floor3.mobs.get(0).entity)
+                            && floor3.mobs.get(0).count == 3
+                            && floor3.strength != null
+                            && Math.abs(floor3.strength.speedMultiplier - 1.15D) < 0.0001D,
+                    "第 3 层的苦力怕编排或逐层强度没生效（实际 " + describe(floor3) + "）");
+            check(failures, floor4 != null && !floor4.mobs.isEmpty() && "第 4 层".equals(floor4.title),
+                    "没在 floors 里出现的层仍应走层段轮换（实际 " + describe(floor4) + "）");
+            check(failures, floor10 != null && floor10.bossIndex == 0 && !floor10.mobs.isEmpty()
+                            && floor10.mobs.get(0).boss
+                            && "minecraft:vindicator".equals(floor10.mobs.get(0).entity)
+                            && floor10.mobs.size() == 2 && floor10.mobs.get(1).count == 3,
+                    "第 10 层的 BOSS 编排（vindicator 当 BOSS + 3 只掠夺者）没落地（实际 " + describe(floor10) + "）");
+            check(failures, floor10 != null && floor10.rewards.stream()
+                            .anyMatch(reward -> "minecraft:golden_apple".equals(reward.item)),
+                    "逐层指定的额外奖励没进来");
+            check(failures, first != null && !first.mobs.isEmpty()
+                            && first.mobs.get(0) != tower.scaling.floors.get(0).mobs.get(0),
+                    "逐层编排的条目必须是复制件——把模型对象交给状态机改（打 boss 标记）会污染下一次取层");
             if (bossFloor != null && !bossFloor.mobs.isEmpty() && tower.scaling != null)
             {
                 TrialDefinition.Tier tier = tower.scaling.tiers.stream()
@@ -127,6 +157,10 @@ public final class TrialSelfTest
             check(failures, deep != null && deep.mobs.stream().allMatch(entry -> entry.count <= tower.scaling.maxCountPerEntry),
                     "501 层的怪量应被 max_count_per_entry 钳制");
         }
+
+        // 逐层编排的两条校验：同一层配两次、以及超出层段覆盖范围（后者会静默取不到内容＝塔在那层断掉）
+        check(failures, probeDuplicateFloorRejected(), "scaling.floors 里同一层配了两次必须被校验拦下");
+        check(failures, probeFloorBeyondTiersRejected(), "floors 指向 tiers 没覆盖的层必须被校验拦下");
 
         // 注册面：三个方块 / 三个物品 / 方块实体类型 / 创造栏都要真的进注册表
         for (String name : List.of("challenge_portal", "tower_portal", "trial_portal"))
@@ -316,9 +350,10 @@ public final class TrialSelfTest
                     challenge.id() + " 必须恰好三档难度 easy/normal/hard，实际 " + challenge.difficulties.keySet());
             ChallengeDefinition.Difficulty easy = challenge.difficulty("easy");
             ChallengeDefinition.Difficulty hard = challenge.difficulty("hard");
-            check(failures, easy != null && hard != null && hard.mobCap > easy.mobCap
-                            && hard.healthMultiplier >= easy.healthMultiplier,
-                    challenge.id() + " 的 hard 要比 easy 更凶（上限与血量倍率都要更高）");
+            double easyHp = easy == null || easy.strength == null ? 1.0D : easy.strength.healthMultiplier;
+            double hardHp = hard == null || hard.strength == null ? 1.0D : hard.strength.healthMultiplier;
+            check(failures, easy != null && hard != null && hard.mobCap > easy.mobCap && hardHp >= easyHp,
+                    challenge.id() + " 的 hard 要比 easy 更凶（场上上限更高、血量倍率不许更低）");
             check(failures, challenge.defaultDifficulty() != null, challenge.id() + " 要能取到默认难度");
         }
         check(failures, "normal".equals(ChallengeLibrary.normalizeDifficulty(null))
@@ -517,23 +552,61 @@ public final class TrialSelfTest
                         .contains("projectile"),
                 "从 NBT 恢复后免疫列表应还在");
 
-        // 副本难度倍率：必须是 permanent modifier，否则区块重载后血量掉回去
+        // 强度必须是 permanent modifier（会随实体存档），且不许改基值——
+        // 以前 scaleForFloor 用 setBaseValue 乘基值，SNBT 写的属性会被它吃掉，顺序决定结果。
         Vindicator dungeonMob = new Vindicator(EntityType.VINDICATOR, level);
         double plainHealth = dungeonMob.getMaxHealth();
-        TrialManager.boostHealth(dungeonMob, 2.0D);
+        double plainHealthBase = dungeonMob.getAttribute(Attributes.MAX_HEALTH).getBaseValue();
+        double plainArmor = dungeonMob.getAttribute(Attributes.ARMOR).getValue();
+        MobStrength strength = new MobStrength();
+        strength.healthMultiplier = 2.0D;
+        strength.damageMultiplier = 1.5D;
+        strength.armorBonus = 3.0D;
+        MobStrengths.apply(dungeonMob, strength);
         check(failures, Math.abs(dungeonMob.getMaxHealth() - plainHealth * 2.0D) < 0.51D,
-                "health_multiplier=2 应把上限从 " + plainHealth + " 抬到 " + plainHealth * 2.0D
+                "strength.health_multiplier=2 应把上限从 " + plainHealth + " 抬到 " + plainHealth * 2.0D
                         + "，实际 " + dungeonMob.getMaxHealth());
-        TrialManager.boostHealth(dungeonMob, 2.0D);
+        check(failures, Math.abs(dungeonMob.getAttribute(Attributes.MAX_HEALTH).getBaseValue() - plainHealthBase) < 0.01D,
+                "倍率不该改基值（改了就会吃掉 SNBT 里写的属性）");
+        check(failures, Math.abs(dungeonMob.getAttribute(Attributes.ARMOR).getValue() - (plainArmor + 3.0D)) < 0.01D,
+                "armor_bonus 应加 3 点，实际 " + dungeonMob.getAttribute(Attributes.ARMOR).getValue());
+        MobStrengths.apply(dungeonMob, strength);
         check(failures, Math.abs(dungeonMob.getMaxHealth() - plainHealth * 2.0D) < 0.51D,
-                "同一倍率重复应用不该叠层（修饰符按名字幂等）");
+                "同一份强度重复应用不该叠层（每条属性一个固定 UUID）");
         CompoundTag dungeonSaved = new CompoundTag();
         dungeonMob.saveWithoutId(dungeonSaved);
         Vindicator dungeonRestored = new Vindicator(EntityType.VINDICATOR, level);
         dungeonRestored.load(dungeonSaved);
         check(failures, Math.abs(dungeonRestored.getMaxHealth() - dungeonMob.getMaxHealth()) < 0.51D,
-                "重载后血量倍率应还在（副本怪的难度不能因为区块卸载而失效）");
+                "重载后强度倍率应还在（不能因为区块卸载掉回原值）");
         dungeonMob.discard();
+
+        // 三层链：定义级 → 波次级 → 单只怪级，乘数相乘、加值相加
+        MobStrength outer = new MobStrength();
+        outer.healthMultiplier = 2.0D;
+        outer.armorBonus = 1.0D;
+        MobStrength inner = new MobStrength();
+        inner.healthMultiplier = 1.5D;
+        inner.damageMultiplier = 3.0D;
+        inner.armorBonus = 2.0D;
+        MobStrength chain = MobStrength.combined(outer, inner);
+        check(failures, chain != null && Math.abs(chain.healthMultiplier - 3.0D) < 0.0001D
+                        && Math.abs(chain.damageMultiplier - 3.0D) < 0.0001D
+                        && Math.abs(chain.armorBonus - 3.0D) < 0.0001D,
+                "强度链应乘数相乘、加值相加，实际 health=" + (chain == null ? "null" : chain.healthMultiplier)
+                        + " damage=" + (chain == null ? "null" : chain.damageMultiplier)
+                        + " armor=" + (chain == null ? "null" : chain.armorBonus));
+        check(failures, MobStrength.combined(null, inner) == inner && MobStrength.combined(outer, null) == outer,
+                "链上任一层缺省就该原样透传");
+        check(failures, new MobStrength().isIdentity() && MobStrength.perFloor(1.0D, 1.0D).isIdentity(),
+                "没写强度时必须是恒等（不许悄悄给所有怪加血）");
+        MobStrength bogus = new MobStrength();
+        bogus.healthMultiplier = -1.0D;
+        check(failures, bogus.resolve("测试") != null, "负倍率必须被校验拦下");
+        MobStrength percent = new MobStrength();
+        percent.damageMultiplier = 250.0D;
+        check(failures, percent.resolve("测试") != null,
+                "倍率大得不像话（像是写成百分比）必须被校验拦下");
         check(failures, TrialMode.CHALLENGE.isSustained() && !TrialMode.TRIAL.isSustained()
                         && !TrialMode.TOWER.isSustained(),
                 "只有闯关是「不计波次、持续补充」的玩法");
@@ -542,6 +615,63 @@ public final class TrialSelfTest
         check(failures, interval >= 1, "tick_interval 至少为 1");
         boss.discard();
         return failures;
+    }
+
+    /** 失败信息里把一波的内容摘要出来，免得只看到"没按编排出来"却不知道实际是什么。 */
+    private static String describe(TrialDefinition.WaveContent content)
+    {
+        if (content == null)
+        {
+            return "null";
+        }
+        StringBuilder text = new StringBuilder(content.title == null ? "?" : content.title).append(" → ");
+        for (TrialDefinition.MobEntry entry : content.mobs)
+        {
+            text.append(entry.entity).append('x').append(entry.count).append(entry.boss ? "(BOSS)" : "").append(' ');
+        }
+        return text.toString().trim();
+    }
+
+    /** 造一份只用来测校验的合成爬塔定义：floors 由调用方填。 */
+    private static TrialDefinition probeTowerWithFloors(int coveredTo, TrialDefinition.FloorOverride... overrides)
+    {
+        TrialDefinition definition = new TrialDefinition();
+        definition.mode = TrialMode.TOWER;
+        definition.displayName = "探针塔";
+        TrialDefinition.Tier tier = new TrialDefinition.Tier();
+        tier.from = 1;
+        tier.to = coveredTo;
+        tier.mobs = List.of("minecraft:zombie");
+        TrialDefinition.ScalingRule scaling = new TrialDefinition.ScalingRule();
+        scaling.tiers = new ArrayList<>(List.of(tier));
+        scaling.floors = new ArrayList<>(List.of(overrides));
+        definition.scaling = scaling;
+        return definition;
+    }
+
+    private static TrialDefinition.FloorOverride probeFloor(int floor, String entity)
+    {
+        TrialDefinition.MobEntry entry = new TrialDefinition.MobEntry();
+        entry.entity = entity;
+        entry.count = 1;
+        TrialDefinition.FloorOverride override = new TrialDefinition.FloorOverride();
+        override.floor = floor;
+        override.mobs = new ArrayList<>(List.of(entry));
+        return override;
+    }
+
+    private static boolean probeDuplicateFloorRejected()
+    {
+        TrialDefinition definition = probeTowerWithFloors(9999, probeFloor(7, "minecraft:zombie"),
+                probeFloor(7, "minecraft:creeper"));
+        String error = definition.resolve("trial_portal:__probe_dup");
+        return error != null && error.contains("配了两次");
+    }
+
+    private static boolean probeFloorBeyondTiersRejected()
+    {
+        TrialDefinition definition = probeTowerWithFloors(50, probeFloor(88, "minecraft:zombie"));
+        return definition.resolve("trial_portal:__probe_far") != null;
     }
 
     /** Attributes = [{Name, Base, Modifiers:[{Name, Amount, Operation}]}, ...] */

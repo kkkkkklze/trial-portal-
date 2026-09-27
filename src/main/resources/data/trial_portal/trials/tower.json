@@ -11,6 +11,37 @@
     "intermission_ticks": 40,
     "reward_every_floors": 5,
     "boss_every_floors": 10,
+    "floors": [
+      {
+        "floor": 1,
+        "title": "第 1 层 · 热身",
+        "mobs": [ { "entity": "minecraft:zombie", "count": 2 } ]
+      },
+      {
+        "floor": 2,
+        "title": "第 2 层 · 两翼",
+        "mobs": [
+          { "entity": "minecraft:zombie", "count": 2 },
+          { "entity": "minecraft:skeleton", "count": 2 }
+        ]
+      },
+      {
+        "floor": 3,
+        "title": "第 3 层 · 苦力怕走廊",
+        "mobs": [ { "entity": "minecraft:creeper", "count": 3 } ],
+        "strength": { "speed_multiplier": 1.15 }
+      },
+      {
+        "floor": 10,
+        "title": "第 10 层 · 塔卫",
+        "boss": true,
+        "mobs": [
+          { "entity": "minecraft:vindicator", "count": 1, "boss": true },
+          { "entity": "minecraft:pillager", "count": 3 }
+        ],
+        "rewards": [ { "item": "minecraft:golden_apple", "count": 1 } ]
+      }
+    ],
     "boss_affix_pool": [
       "trial_portal:anti_armor",
       "trial_portal:crusher",
@@ -42,6 +73,7 @@
         "count": 6,
         "boss": true,
         "mobs": [ "minecraft:ravager", "minecraft:pillager", "minecraft:vindicator", "minecraft:witch" ],
+        "strength": { "armor_bonus": 3.0, "knockback_resistance": 0.2 },
         "boss_affix_pool": [
           "trial_portal:crusher",
           "trial_portal:thorns",

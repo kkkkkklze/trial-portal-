@@ -126,9 +126,17 @@ public class ChallengeDefinition
         @SerializedName("spawn_interval_ticks")
         public int spawnIntervalTicks = 100;
 
-        /** 血量倍率（作用于每只怪的 max_health），1.0 = 不放大。 */
-        @SerializedName("health_multiplier")
-        public double healthMultiplier = 1.0D;
+        /** 这一档的怪有多凶（血量/攻击/速度倍率 + 护甲/击退抗性加值），单只怪条目上还能再叠一层。 */
+        @SerializedName("strength")
+        public MobStrength strength;
+
+        /** 补怪落点的水平半径；缺省 7（贴着隔间平台）。 */
+        @SerializedName("spawn_radius")
+        public Double spawnRadius;
+
+        /** 补怪落点的上下搜索高度；缺省 2。 */
+        @SerializedName("spawn_height")
+        public Double spawnHeight;
 
         /** 杀一只往待结算池里加什么。空 = 这一档不给奖。 */
         @SerializedName("kill_rewards")
@@ -137,6 +145,17 @@ public class ChallengeDefinition
         public String displayNameOrDefault(String key)
         {
             return this.displayName == null || this.displayName.isBlank() ? key : this.displayName;
+        }
+
+        /** 补怪落点：这一档没写就用隔间平台边上的默认值（原来这两个数是 Java 常量，改一次要重编译）。 */
+        public double spawnRadiusOrDefault()
+        {
+            return this.spawnRadius == null ? 7.0D : Math.max(1.0D, this.spawnRadius);
+        }
+
+        public double spawnHeightOrDefault()
+        {
+            return this.spawnHeight == null ? 2.0D : Math.max(1.0D, this.spawnHeight);
         }
 
         @Nullable
@@ -169,9 +188,21 @@ public class ChallengeDefinition
             {
                 return where + " 的 spawn_interval_ticks 太小（" + this.spawnIntervalTicks + "），一秒内补好几次没意义";
             }
-            if (this.healthMultiplier <= 0.0D)
+            if (this.strength != null)
             {
-                return where + " 的 health_multiplier 要为正数";
+                String strengthError = this.strength.resolve(where + " 的 strength");
+                if (strengthError != null)
+                {
+                    return strengthError;
+                }
+            }
+            if (this.spawnRadius != null && this.spawnRadius < 1.0D)
+            {
+                return where + " 的 spawn_radius 至少 1（当前 " + this.spawnRadius + "）";
+            }
+            if (this.spawnHeight != null && this.spawnHeight < 1.0D)
+            {
+                return where + " 的 spawn_height 至少 1（当前 " + this.spawnHeight + "）";
             }
             for (TrialDefinition.RewardEntry reward : this.killRewards)
             {
