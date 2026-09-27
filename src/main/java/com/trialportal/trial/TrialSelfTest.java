@@ -177,6 +177,37 @@ public final class TrialSelfTest
             check(failures, before == 5 && after == 4,
                     "多余终端必须在重建时被抹平：埋一个之后应有 5 个，重建后只剩 4 个（实际 "
                             + before + " → " + after + "）");
+            // 庙（#23）：门前不许堵、柱子要真立起来、加了装饰之后中央依旧空
+            int blocked = 0;
+            int columns = 0;
+            for (int slot = -1; slot <= 1; slot++)
+            {
+                int dx = -gap + slot * 2 * gap;
+                if (!arenaLevel.getBlockState(lobby.offset(dx, 1, row + 1)).isAir())
+                {
+                    blocked++;
+                }
+                for (int dy = 1; dy <= 5; dy++)
+                {
+                    if (arenaLevel.getBlockState(lobby.offset(dx - 2, dy, row))
+                            .is(net.minecraft.world.level.block.Blocks.CHISELED_POLISHED_BLACKSTONE))
+                    {
+                        columns++;
+                    }
+                    if (arenaLevel.getBlockState(lobby.offset(dx + 2, dy, row))
+                            .is(net.minecraft.world.level.block.Blocks.CHISELED_POLISHED_BLACKSTONE))
+                    {
+                        columns++;
+                    }
+                }
+            }
+            check(failures, blocked == 0, "庙把 " + blocked + " 扇门的门前一格堵住了，玩家右键会点不到门");
+            check(failures, columns >= 30,
+                    "大厅庙柱只数到 " + columns + " 格（三对柱子各 5 格，应为 30）——装饰没建出来");
+            check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, 0)).isAir()
+                            && arenaLevel.getBlockState(lobby.offset(0, 3, 0)).isAir()
+                            && arenaLevel.getBlockState(lobby.offset(4, 2, 4)).isAir(),
+                    "加了庙之后场地中央不再空（§9-6 契约：装饰只许长在边缘）");
             BlockPos cell = com.trialportal.arena.ArenaService.cellOrigin(1);
             com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, cell, TrialMode.CHALLENGE);
             check(failures, arenaLevel.getBlockState(cell.offset(-gap, 1, row)).getBlock() instanceof TrialPortalBlock,
@@ -383,6 +414,16 @@ public final class TrialSelfTest
                     probeReleaseByAccounting(arenaLevel, server, failures, radius);
                     // 换玩法（编号跨段）时旧那间必须真被拆掉，不是只把记账覆盖掉
                     probeModeSwitchReclaimsOldCell(arenaLevel, server, failures, radius);
+                    // 拆场按真实写过的区域算，不按房间表声明的尺寸猜
+                    probeTeardownUsesRecordedBox(arenaLevel, server, failures);
+                    // 灯要真嵌进墙环，拆场也得一起没
+                    probeRoomLights(arenaLevel, server, failures);
+                    // 立柱顶到天花板 + BOSS 锚点落在中心舞台
+                    probePillarsAndBossAnchor(arenaLevel, failures);
+                    // 房间引用的方块必须真的存在（离线门看不到注册表）
+                    probeRoomBlocksResolve(failures);
+                    // 同一颗种子建出同一份布局
+                    probeLayoutIsSeedDriven(arenaLevel, failures);
                 }
             }
         }
@@ -622,10 +663,6 @@ public final class TrialSelfTest
     }
 
     /**
-     * 走真离场的那条路：{@code releaseCell(arena, manager, uuid, cell)}，进深从记账里读。
-     * 真机就是栽在这里——调用点各自传 reach，漏传一次就在虚空里留下一整间房外加 force 着的区块。
-     */
-    /**
      * 换玩法要跨编号段（闯关 1 起、试炼 2001 起）。旧编号要是只被 {@code put} 覆盖掉，记账里就再没人
      * 记得那儿有一间房：平台留在虚空里，而那个编号重新变成"空闲"，下一批人里谁分到它就会走进别人的旧场地。
      * 这条只认方块——实体在无头门里查不到（见 {@link #onServerStarted} 的说明）。
@@ -649,6 +686,226 @@ public final class TrialSelfTest
         manager.freeCell(player);
     }
 
+    /**
+     * 灯：房间表的 {@code light_block}/{@code light_spacing} 必须真的嵌进墙环，并且拆场时一起没。
+     * 这条是玩家报的第一条观感问题的落地判据——维度 ambient_light 只有 0.15，没灯的房等于黑盒子。
+     */
+    private static void probeRoomLights(ServerLevel arenaLevel, MinecraftServer server, List<String> failures)
+    {
+        TrialManager manager = TrialManager.get(server);
+        java.util.UUID player = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:light".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int cell = manager.allocateCell(player, TrialMode.TRIAL, null);
+        RoomDefinition room = new RoomDefinition();
+        room.size = List.of(7, 4, 7);
+        room.spawnPoints = 1;
+        room.mobCap = 1;
+        room.lightBlock = "minecraft:soul_lantern";
+        room.lightSpacing = 2;
+        String error = room.resolve("trial_portal:__probe_light");
+        if (error != null)
+        {
+            check(failures, false, "灯探针没过自己的校验（" + error + "），这条判据没跑");
+            return;
+        }
+        BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+        BlockPos origin = cellOrigin.offset(-room.width() / 2, 0, com.trialportal.arena.ArenaService.radius() + 4);
+        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, origin,
+                net.minecraft.util.RandomSource.create(4711L));
+        int lamps = countLamps(arenaLevel, origin, room);
+        check(failures, lamps >= 4,
+                "墙环上只找到 " + lamps + " 盏灯（light_spacing=2 的 7x7 房该有一排）——灯没嵌进墙里，房还是黑的");
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, cell,
+                origin.getZ() + room.depth() - cellOrigin.getZ(), null);
+        check(failures, countLamps(arenaLevel, origin, room) == 0, "拆场把灯落在了虚空里");
+        manager.freeCell(player);
+    }
+
+    /** 数墙环视线那一层（dy=2）上有多少盏探针灯。 */
+    private static int countLamps(ServerLevel level, BlockPos origin, RoomDefinition room)
+    {
+        int lamps = 0;
+        for (BlockPos pos : BlockPos.betweenClosed(origin.offset(-1, 2, -1),
+                origin.offset(room.width(), 2, room.depth())))
+        {
+            if (level.getBlockState(pos).is(net.minecraft.world.level.block.Blocks.SOUL_LANTERN))
+            {
+                lamps++;
+            }
+        }
+        return lamps;
+    }
+
+    /**
+     * 立柱要顶到天花板（以前写死 4 格，8 格高的厅里就是一根半截桩），
+     * BOSS 锚点要落在房间中心那块可站的地上（它以前是死代码，BOSS 实际跟小怪一起排在内圈门边）。
+     */
+    private static void probePillarsAndBossAnchor(ServerLevel arenaLevel, List<String> failures)
+    {
+        RoomDefinition room = new RoomDefinition();
+        room.size = List.of(7, 8, 7);
+        room.spawnPoints = 1;
+        room.mobCap = 1;
+        room.pillars = 1;
+        room.pillarBlock = "minecraft:gilded_blackstone";
+        room.bossRoom = true;
+        String error = room.resolve("trial_portal:__probe_pillar");
+        if (error != null)
+        {
+            check(failures, false, "立柱探针没过自己的校验（" + error + "），这条判据没跑");
+            return;
+        }
+        BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(9);
+        BlockPos origin = cellOrigin.offset(-room.width() / 2, 0, com.trialportal.arena.ArenaService.radius() + 4);
+        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, origin,
+                net.minecraft.util.RandomSource.create(1313L));
+        BlockPos column = origin.offset(2, 1, 2);
+        int tall = 0;
+        for (int dy = 1; dy <= room.height(); dy++)
+        {
+            if (arenaLevel.getBlockState(column.above(dy - 1))
+                    .is(net.minecraft.world.level.block.Blocks.GILDED_BLACKSTONE))
+            {
+                tall++;
+            }
+        }
+        check(failures, tall == room.height(),
+                "8 格高的厅里柱子只有 " + tall + " 格（声明 pillar_height=0 应顶到天花板，材质也要认 pillar_block）");
+        check(failures, arenaLevel.getBlockState(column.above(room.height())).isAir(),
+                "柱子穿过了声明高度");
+        BlockPos anchor = room.bossAnchor(origin);
+        check(failures, isGround(arenaLevel, anchor.below()) && arenaLevel.getBlockState(anchor).isAir()
+                        && arenaLevel.getBlockState(anchor.above()).isAir(),
+                "BOSS 锚点 " + anchor.toShortString() + " 不是能站两个人的净空（脚下不实心或头顶被挡）");
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 9,
+                origin.getZ() + room.depth() - cellOrigin.getZ());
+    }
+
+    /**
+     * 方块 ID 写法合法但注册表里根本没有——离线门看不见（它没有活注册表），运行期只会 warn 一句
+     * 然后静默回退成默认材质。这一轮我自己就踩了一次：把柱子写成 polished_blackstone_pillar，
+     * 黑石家族里根本没这块，房间会悄悄变回雕纹黑石砖。所以这条必须在有注册表的进程里查。
+     */
+    private static void probeRoomBlocksResolve(List<String> failures)
+    {
+        List<String> missing = new ArrayList<>();
+        for (RoomDefinition room : RoomLibrary.snapshot().values())
+        {
+            List<String> candidates = new ArrayList<>();
+            candidates.add(room.floor);
+            candidates.add(room.wall);
+            candidates.add(room.pillarBlock);
+            candidates.add(room.lightBlock);
+            for (RoomDefinition.CoverEntry cover : room.cover)
+            {
+                candidates.add(cover.block);
+            }
+            for (String id : candidates)
+            {
+                if (id == null || id.isBlank())
+                {
+                    continue; // 空串＝"用默认"，不是引用
+                }
+                ResourceLocation key = ResourceLocation.tryParse(id);
+                if (key == null || !net.minecraftforge.registries.ForgeRegistries.BLOCKS.containsKey(key))
+                {
+                    missing.add(room.id() + " → " + id);
+                }
+            }
+        }
+        check(failures, missing.isEmpty(),
+                "有房间方块在注册表里不存在，运行期会静默回退成默认材质：" + String.join("、", missing));
+    }
+
+    /**
+     * 同一颗种子必须建出同一份布局：遮挡物以前直接吃 {@code level.getRandom()}，
+     * 世界随机流每 tick 都在动，"同一场重进还是这个样"根本谈不上，#24 的外观变体也没地方挂。
+     */
+    private static void probeLayoutIsSeedDriven(ServerLevel arenaLevel, List<String> failures)
+    {
+        RoomDefinition room = null;
+        for (RoomDefinition candidate : RoomLibrary.snapshot().values())
+        {
+            if (!candidate.cover.isEmpty())
+            {
+                room = candidate;
+                break;
+            }
+        }
+        if (room == null)
+        {
+            check(failures, false, "房间库里没有一份带 cover 的房，种子判据等于没跑");
+            return;
+        }
+        int offset = com.trialportal.arena.ArenaService.radius() + 4;
+        BlockPos a = com.trialportal.arena.ArenaService.cellOrigin(10).offset(-room.width() / 2, 0, offset);
+        BlockPos b = com.trialportal.arena.ArenaService.cellOrigin(11).offset(-room.width() / 2, 0, offset);
+        long seed = 9001L;
+        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, a, net.minecraft.util.RandomSource.create(seed));
+        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, b, net.minecraft.util.RandomSource.create(seed));
+        int mismatch = 0;
+        for (int dx = 0; dx <= room.width() + 1; dx++)
+        {
+            for (int dz = 0; dz <= room.depth() + 1; dz++)
+            {
+                for (int dy = 1; dy <= room.height() + 1; dy++)
+                {
+                    if (!arenaLevel.getBlockState(a.offset(dx, dy, dz))
+                            .is(arenaLevel.getBlockState(b.offset(dx, dy, dz)).getBlock()))
+                    {
+                        mismatch++;
+                    }
+                }
+            }
+        }
+        check(failures, mismatch == 0,
+                "同一颗种子两次建出的 " + room.id() + " 有 " + mismatch + " 格不一致（cover 没走会话种子？）");
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 10);
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 11);
+    }
+
+    /**
+     * 拆场必须按"本场真实写过的区域"算，不按房间表声明的 size 反推。
+     * 判据是两侧都有牙的：先证明只按声明盒子拆**留得住**那格超纲装饰（否则探针没构造出情况），
+     * 再证明按记账区域拆**清得掉**它并把区块还回去。
+     */
+    private static void probeTeardownUsesRecordedBox(ServerLevel arenaLevel, MinecraftServer server,
+                                                     List<String> failures)
+    {
+        TrialManager manager = TrialManager.get(server);
+        java.util.UUID player = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:decor".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int cell = manager.allocateCell(player, TrialMode.TRIAL, null);
+        BlockPos origin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+        com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, origin, TrialMode.TRIAL);
+        net.minecraft.world.phys.AABB declared = com.trialportal.arena.ArenaService.cellBox(cell, 0);
+        BlockPos decor = new BlockPos((int) declared.maxX + 3, com.trialportal.arena.ArenaService.FLOOR_Y,
+                (int) declared.minZ);
+        long decorChunk = net.minecraft.world.level.ChunkPos.asLong(decor.getX() >> 4, decor.getZ() >> 4);
+        arenaLevel.setChunkForced(decor.getX() >> 4, decor.getZ() >> 4, true);
+        arenaLevel.setBlock(decor, net.minecraft.world.level.block.Blocks.POLISHED_BLACKSTONE.defaultBlockState(),
+                net.minecraft.world.level.block.Block.UPDATE_ALL);
+        check(failures, !arenaLevel.getBlockState(decor).isAir(),
+                "探针没能把超纲装饰写进场地（" + decor.toShortString() + "），这条判据是空的");
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, cell, 0);
+        check(failures, !arenaLevel.getBlockState(decor).isAir()
+                        && arenaLevel.getForcedChunks().contains(decorChunk),
+                "探针失效：只按声明尺寸拆场，居然把超纲的装饰和它的区块一起带走了");
+        manager.recordBuilt(player, 0, new net.minecraft.world.phys.AABB(decor.getX(), decor.getY(), decor.getZ(),
+                decor.getX() + 1, decor.getY() + 1, decor.getZ() + 1));
+        com.trialportal.arena.ArenaService.releaseCell(arenaLevel, manager, player, cell);
+        check(failures, arenaLevel.getBlockState(decor).isAir()
+                        && !arenaLevel.getForcedChunks().contains(decorChunk),
+                "按记账里的真实区域拆场没清干净：装饰还在="
+                        + !arenaLevel.getBlockState(decor).isAir()
+                        + "，区块没还回去=" + arenaLevel.getForcedChunks().contains(decorChunk));
+        manager.freeCell(player);
+    }
+
+    /**
+     * 走真离场的那条路：{@code releaseCell(arena, manager, uuid, cell)}，进深从记账里读。
+     * 真机就是栽在这里——调用点各自传 reach，漏传一次就在虚空里留下一整间房外加 force 着的区块。
+     */
     private static void probeReleaseByAccounting(ServerLevel arenaLevel, MinecraftServer server,
                                                  List<String> failures, int radius)
     {
@@ -665,8 +922,9 @@ public final class TrialSelfTest
         java.util.Set<Long> forcedBefore = new java.util.HashSet<>(arenaLevel.getForcedChunks());
         com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, cellOrigin, TrialMode.TRIAL);
         BlockPos origin = cellOrigin.offset(-room.width() / 2, 0, radius + 4);
-        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, origin, net.minecraft.util.RandomSource.create(999L));
-        manager.recordReach(probePlayer, origin.getZ() + room.depth() - cellOrigin.getZ());
+        com.trialportal.arena.RoomBuilder.Built probeBuilt = com.trialportal.arena.RoomBuilder.build(
+                arenaLevel, room, origin, net.minecraft.util.RandomSource.create(999L));
+        manager.recordBuilt(probePlayer, origin.getZ() + room.depth() - cellOrigin.getZ(), probeBuilt.region());
         int recorded = manager.reachOf(probePlayer);
         check(failures, recorded > 0, "进深应记在账上，而不是只活在会话对象里");
         com.trialportal.arena.ArenaService.releaseCell(arenaLevel, manager, probePlayer, 6);

@@ -57,7 +57,7 @@ public final class ArenaService
     private static final org.slf4j.Logger LOGGER = LogUtils.getLogger();
 
     /** 开服清扫排到下一轮的隔间：怪要等实体注入才看得见，强制加载也得等那一刻之后再松手。 */
-    private record PendingRelease(int cell, int reach, UUID playerId) {}
+    private record PendingRelease(int cell, int reach, @Nullable AABB built, UUID playerId) {}
 
     private static final List<PendingRelease> PENDING_RELEASES = new ArrayList<>();
 
@@ -215,7 +215,8 @@ public final class ArenaService
         int cell = manager.allocateCell(player.getUUID(), TrialMode.CHALLENGE, arena);
         BlockPos origin = cellOrigin(cell);
         buildPlatform(arena, origin, TrialMode.CHALLENGE);
-        sweepCellMobs(arena, cell, manager.reachOf(player.getUUID())); // 兜底：正常清怪在上一场离场那一次
+        sweepCellMobs(arena, cell, manager.reachOf(player.getUUID()),
+                manager.builtBoxOf(player.getUUID())); // 兜底：正常清怪在上一场离场那一次
         if (!manager.startDungeon(player, challenge, difficultyKey, origin, cell, arena.dimension()))
         {
             releaseCell(arena, manager, player.getUUID(), cell); // 台已经铺了，只销记账会留下一间没人认领的房
@@ -244,7 +245,8 @@ public final class ArenaService
         int cell = manager.allocateCell(player.getUUID(), definition.mode, arena);
         BlockPos origin = cellOrigin(cell);
         buildPlatform(arena, origin, definition.mode);
-        sweepCellMobs(arena, cell, manager.reachOf(player.getUUID())); // 兜底：正常清怪在上一场离场那一次
+        sweepCellMobs(arena, cell, manager.reachOf(player.getUUID()),
+                manager.builtBoxOf(player.getUUID())); // 兜底：正常清怪在上一场离场那一次
         if (!manager.start(player, definition, origin, cell, arena.dimension()))
         {
             releaseCell(arena, manager, player.getUUID(), cell);
@@ -280,10 +282,11 @@ public final class ArenaService
         releaseCell(arena, manager, uuid, cell);
     }
 
-    /** 拆掉这个玩家占的隔间（大厅永不拆）并清掉记账。进深从记账里取，不由调用点传——漏传一次就会留下一间房。 */
+    /** 拆掉这个玩家占的隔间（大厅永不拆）并清掉记账。进深与真实区域都从记账里取，不由调用点传——漏传一次就会留下一间房。 */
     public static void releaseCell(@Nullable ServerLevel arena, TrialManager manager, UUID playerId, int cell)
     {
-        int reach = manager.reachOf(playerId); // 先读进深：freeCell 会把它一起销掉
+        int reach = manager.reachOf(playerId); // 先读：freeCell 会把这两条一起销掉
+        AABB built = manager.builtBoxOf(playerId);
         if (arena == null)
         {
             // 维度没加载：宁可留着记账。编号一销，那间房就再没人认得它了；留着下次开服清扫还能收。
@@ -294,12 +297,12 @@ public final class ArenaService
         {
             if (Boolean.TRUE.equals(TrialConfig.ARENA_CLEAR_CELL_ON_END.get()))
             {
-                releaseCellAt(arena, cell, reach);
+                releaseCellAt(arena, cell, reach, built);
             }
             else
             {
-                sweepCellMobs(arena, cell, reach); // 留着平台不等于留着怪
-                BlockPos[] bounds = cellBounds(cell, reach);
+                sweepCellMobs(arena, cell, reach, built); // 留着平台不等于留着怪
+                BlockPos[] bounds = cellBounds(cell, reach, built);
                 setRegionForced(arena, bounds[0], bounds[1], false); // 房留在盘上，区块要还回去，否则每场攒一叠常驻
             }
         }
@@ -308,37 +311,55 @@ public final class ArenaService
 
     public static void releaseCellAt(ServerLevel arena, int cell)
     {
-        releaseCellAt(arena, cell, 0);
+        releaseCellAt(arena, cell, 0, null);
+    }
+
+    public static void releaseCellAt(ServerLevel arena, int cell, int reach)
+    {
+        releaseCellAt(arena, cell, reach, null);
     }
 
     /**
      * @param reach 试炼玩法沿 +Z 方向多建出来的进深（房间与走廊）；0 = 只有入口平台
+     * @param built 本场真实写过的区域；null = 只按声明尺寸算（老存档或纯平台隔间）
      */
-    public static void releaseCellAt(ServerLevel arena, int cell, int reach)
+    public static void releaseCellAt(ServerLevel arena, int cell, int reach, @Nullable AABB built)
     {
         if (cell == LOBBY_CELL)
         {
             return;
         }
-        BlockPos[] bounds = cellBounds(cell, reach);
+        BlockPos[] bounds = cellBounds(cell, reach, built);
         setRegionForced(arena, bounds[0], bounds[1], true);
-        sweepCellMobs(arena, cell, reach);
+        sweepCellMobs(arena, cell, reach, built);
         clearCellBlocks(arena, bounds[0], bounds[1]);
         setRegionForced(arena, bounds[0], bounds[1], false);
     }
 
     /**
-     * 拆场的方块盒子。清场盒子要按房间里最大的那间算：房可以比平台宽、比默认高度高，走廊还往 +Z
-     * 接出去 reach 格。只按平台半径清会把房间两侧外墙留在虚空里，并且把 RoomBuilder 强制加载的
-     * 区块永久留在场上。
+     * 拆场的方块盒子。按房间里最大的那间 + 真实写过的区域取并集：房可以比平台宽、比默认高度高，
+     * 走廊还往 +Z 接出去 reach 格，而装饰（灯座、庙的台阶）可能写到声明尺寸之外。
+     * 只按声明尺寸清会把超出的部分留在虚空里，并且把建房时强制加载的区块永久留在场上。
      */
-    private static BlockPos[] cellBounds(int cell, int reach)
+    private static BlockPos[] cellBounds(int cell, int reach, @Nullable AABB built)
     {
         BlockPos origin = cellOrigin(cell);
         int halfWidth = cellHalfFootprint();
         int topY = Math.max(10, RoomLibrary.maxHeight() + 2);
         int depth = halfWidth + Math.max(0, reach) + 8;
-        return new BlockPos[] {origin.offset(-halfWidth, -1, -halfWidth), origin.offset(halfWidth, topY, depth)};
+        BlockPos from = origin.offset(-halfWidth, -1, -halfWidth);
+        BlockPos to = origin.offset(halfWidth, topY, depth);
+        if (built == null)
+        {
+            return new BlockPos[] {from, to};
+        }
+        return new BlockPos[] {
+                new BlockPos(Math.min(from.getX(), (int) Math.floor(built.minX)),
+                        Math.min(from.getY(), (int) Math.floor(built.minY)),
+                        Math.min(from.getZ(), (int) Math.floor(built.minZ))),
+                new BlockPos(Math.max(to.getX(), (int) Math.ceil(built.maxX) - 1),
+                        Math.max(to.getY(), (int) Math.ceil(built.maxY) - 1),
+                        Math.max(to.getZ(), (int) Math.ceil(built.maxZ) - 1))};
     }
 
     private static void clearCellBlocks(ServerLevel arena, BlockPos from, BlockPos to)
@@ -395,12 +416,13 @@ public final class ArenaService
             }
             int cell = entry.getValue();
             int reach = manager.reachOf(entry.getKey());
+            AABB built = manager.builtBoxOf(entry.getKey());
             if (cell != LOBBY_CELL)
             {
-                BlockPos[] bounds = cellBounds(cell, reach);
+                BlockPos[] bounds = cellBounds(cell, reach, built);
                 setRegionForced(arena, bounds[0], bounds[1], true);
                 clearCellBlocks(arena, bounds[0], bounds[1]);
-                PENDING_RELEASES.add(new PendingRelease(cell, reach, entry.getKey()));
+                PENDING_RELEASES.add(new PendingRelease(cell, reach, built, entry.getKey()));
             }
             swept++;
         }
@@ -428,8 +450,8 @@ public final class ArenaService
         PENDING_RELEASES.clear();
         for (PendingRelease pending : due)
         {
-            sweepCellMobs(arena, pending.cell(), pending.reach());
-            BlockPos[] bounds = cellBounds(pending.cell(), pending.reach());
+            sweepCellMobs(arena, pending.cell(), pending.reach(), pending.built());
+            BlockPos[] bounds = cellBounds(pending.cell(), pending.reach(), pending.built());
             setRegionForced(arena, bounds[0], bounds[1], false);
             manager.freeCell(pending.playerId());
             manager.takeHome(pending.playerId());
@@ -519,6 +541,48 @@ public final class ArenaService
             placeTerminal(level, origin.offset(-gap, 1, row), blockFor(mode));
             placeTerminal(level, origin.offset(gap, 1, row), ModBlocks.ARENA_EXIT.get().defaultBlockState());
         }
+        if (mode == null)
+        {
+            buildShrine(level, origin, gap, row); // 大厅：三扇玩法门要像个地方，不是一排站在裸台上的方块
+        }
+    }
+
+    /**
+     * 大厅北侧那座"庙"：每扇玩法门前一对柱子、一道横梁、一块顶棚，门楣上方嵌一盏灯。
+     * <p>
+     * 三条硬约束：① 只长在边缘，台面中央必须空着（§9-6 拍板过的场地契约）；② 门前一格不许有实体方块，
+     * 否则玩家点不到门；③ 全部走 {@link Brush} 且是无条件覆写，所以反复建台幂等——大厅永远不拆，
+     * 装饰要是会"越建越厚"就没人替你收拾。
+     */
+    private static void buildShrine(ServerLevel level, BlockPos origin, int gap, int row)
+    {
+        Brush brush = new Brush(level);
+        BlockState column = Blocks.CHISELED_POLISHED_BLACKSTONE.defaultBlockState();
+        BlockState beam = Blocks.POLISHED_BLACKSTONE.defaultBlockState();
+        BlockState roof = Blocks.CRACKED_POLISHED_BLACKSTONE_BRICKS.defaultBlockState();
+        BlockState inlay = Blocks.POLISHED_BLACKSTONE.defaultBlockState();
+        BlockState lamp = RoomBuilder.defaultLight();
+        for (int slot = -1; slot <= 1; slot++)
+        {
+            int dx = -gap + slot * 2 * gap; // 三扇玩法门在 -3g / -g / +g，+3g 那格是返回终端
+            for (int dy = 1; dy <= 5; dy++)
+            {
+                brush.put(origin.offset(dx - 2, dy, row), column);
+                brush.put(origin.offset(dx + 2, dy, row), column);
+            }
+            for (int step = -2; step <= 2; step++)
+            {
+                brush.put(origin.offset(dx + step, 6, row), beam);
+                brush.put(origin.offset(dx + step, 7, row), roof);
+                brush.put(origin.offset(dx + step, 7, row + 1), roof);
+                brush.put(origin.offset(dx + step, 0, row + 1), inlay);
+            }
+            brush.put(origin.offset(dx, 1, row + 1), Blocks.AIR.defaultBlockState()); // 门前一格必须站得进人
+            if (lamp != null)
+            {
+                brush.put(origin.offset(dx, 4, row), lamp);
+            }
+        }
     }
 
     /** 把平台范围内已经站着的终端（含上一版布局留下的）先抹平。 */
@@ -582,11 +646,16 @@ public final class ArenaService
      */
     public static int sweepCellMobs(@Nullable ServerLevel arena, int cell, int reach)
     {
+        return sweepCellMobs(arena, cell, reach, null);
+    }
+
+    public static int sweepCellMobs(@Nullable ServerLevel arena, int cell, int reach, @Nullable AABB built)
+    {
         if (arena == null || cell == LOBBY_CELL)
         {
             return 0;
         }
-        AABB box = cellBox(cell, reach);
+        AABB box = cellBox(cell, reach, built);
         int swept = 0;
         for (net.minecraft.world.entity.Mob mob : arena.getEntitiesOfClass(net.minecraft.world.entity.Mob.class, box))
         {
@@ -595,7 +664,7 @@ public final class ArenaService
         }
         if (swept > 0)
         {
-            LOGGER.info("[trial_portal] 隔间 {} 开局前清掉 {} 只遗留怪", cell, swept);
+            LOGGER.info("[trial_portal] 隔间 {} 清掉 {} 只遗留怪", cell, swept);
         }
         return swept;
     }
@@ -603,11 +672,18 @@ public final class ArenaService
     /** 一个隔间从地板到最远进深的完整盒子：扫怪与清场都按它算，两处不许各写一份。 */
     public static AABB cellBox(int cell, int reach)
     {
+        return cellBox(cell, reach, null);
+    }
+
+    /** @param built 本场真实写过的区域（装饰可能超出声明尺寸），与声明盒子取并集 */
+    public static AABB cellBox(int cell, int reach, @Nullable AABB built)
+    {
         BlockPos origin = cellOrigin(cell);
         int half = cellHalfFootprint();
         int depth = half + Math.max(0, reach) + 8;
-        return new AABB(origin.getX() - half, origin.getY() - 2, origin.getZ() - half,
+        AABB declared = new AABB(origin.getX() - half, origin.getY() - 2, origin.getZ() - half,
                 origin.getX() + half + 1, origin.getY() + 26, origin.getZ() + depth + 1);
+        return built == null ? declared : declared.minmax(built);
     }
 
     /**

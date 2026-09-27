@@ -7,6 +7,8 @@
     19
   ],
   "ceiling": true,
+  "light_block": "minecraft:soul_lantern",
+  "light_spacing": 5,
   "pillars": 3,
   "spawn_points": 2,
   "mob_cap": 6,

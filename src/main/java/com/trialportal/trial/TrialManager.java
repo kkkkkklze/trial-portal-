@@ -16,6 +16,7 @@ import net.minecraft.nbt.TagParser;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.util.RandomSource;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -30,6 +31,7 @@ import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.saveddata.SavedData;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.registries.ForgeRegistries;
 import org.jetbrains.annotations.Nullable;
@@ -56,6 +58,7 @@ public class TrialManager extends SavedData
     private static final String TAG_FLOORS = "tower_floors";
     private static final String TAG_CELLS = "arena_cells";
     private static final String TAG_REACH = "arena_reach";
+    private static final String TAG_BUILT = "arena_built";
     private static final String TAG_HOMES = "arena_homes";
     /** 副本补怪的落点范围：贴着隔间平台，不做配置项（越界判定与拆场盒子都按平台尺寸算）。 */
     private static final double DUNGEON_SPAWN_RADIUS = 7.0D;
@@ -80,6 +83,8 @@ public class TrialManager extends SavedData
     private final Map<UUID, Integer> arenaCells = new LinkedHashMap<>();
     /** 玩家 → 本场沿 +Z 建出去的进深。拆场盒子的尺寸要看它，写进存档才不会在调用点上被"忘记传"。 */
     private final Map<UUID, Integer> arenaReach = new LinkedHashMap<>();
+    /** 玩家 → 本场真实写过的区域（6 个整数：minX,minY,minZ,maxX,maxY,maxZ）。拆场按它算，不按声明尺寸猜。 */
+    private final Map<UUID, int[]> arenaBuilt = new LinkedHashMap<>();
     private final Map<UUID, HomePos> arenaHomes = new LinkedHashMap<>();
     private int tickCounter;
 
@@ -114,6 +119,25 @@ public class TrialManager extends SavedData
                 try
                 {
                     manager.arenaReach.put(UUID.fromString(key), reach.getInt(key));
+                }
+                catch (IllegalArgumentException ignored)
+                {
+                    // 同上
+                }
+            }
+        }
+        if (tag.contains(TAG_BUILT))
+        {
+            CompoundTag built = tag.getCompound(TAG_BUILT);
+            for (String key : built.getAllKeys())
+            {
+                try
+                {
+                    int[] span = built.getIntArray(key);
+                    if (span.length == 6)
+                    {
+                        manager.arenaBuilt.put(UUID.fromString(key), span);
+                    }
                 }
                 catch (IllegalArgumentException ignored)
                 {
@@ -173,6 +197,10 @@ public class TrialManager extends SavedData
         this.arenaReach.forEach((uuid, depth) -> reach.putInt(uuid.toString(), depth));
         tag.put(TAG_REACH, reach);
 
+        CompoundTag built = new CompoundTag();
+        this.arenaBuilt.forEach((uuid, span) -> built.putIntArray(uuid.toString(), span));
+        tag.put(TAG_BUILT, built);
+
         CompoundTag homes = new CompoundTag();
         this.arenaHomes.forEach((uuid, home) -> homes.put(uuid.toString(), home.toTag()));
         tag.put(TAG_HOMES, homes);
@@ -218,14 +246,19 @@ public class TrialManager extends SavedData
     public void freeCell(UUID playerId)
     {
         this.arenaReach.remove(playerId);
+        this.arenaBuilt.remove(playerId);
         if (this.arenaCells.remove(playerId) != null)
         {
             this.setDirty();
         }
     }
 
-    /** 本场往 +Z 建出去多远；拆场盒子按它算。 */
-    public void recordReach(UUID playerId, int reach)
+    /**
+     * 记下本场往 +Z 建出去多远、以及真实写过的区域。两个都必须进存档：拆场盒子按它们算，
+     * 只按房间表声明的 {@code size} 反推的话，任何超出声明尺寸的装饰都会留在虚空里，
+     * 连带它所在的那几个强制加载区块也还不回去。
+     */
+    public void recordBuilt(UUID playerId, int reach, @Nullable AABB region)
     {
         Integer old = this.arenaReach.get(playerId);
         if (old == null || old < reach)
@@ -233,11 +266,45 @@ public class TrialManager extends SavedData
             this.arenaReach.put(playerId, reach);
             this.setDirty();
         }
+        if (region == null)
+        {
+            return;
+        }
+        int[] span = this.arenaBuilt.get(playerId);
+        if (span == null)
+        {
+            this.arenaBuilt.put(playerId, spanOf(region));
+            this.setDirty();
+            return;
+        }
+        if (span[0] > region.minX) span[0] = (int) Math.floor(region.minX);
+        if (span[1] > region.minY) span[1] = (int) Math.floor(region.minY);
+        if (span[2] > region.minZ) span[2] = (int) Math.floor(region.minZ);
+        if (span[3] < region.maxX) span[3] = (int) Math.ceil(region.maxX);
+        if (span[4] < region.maxY) span[4] = (int) Math.ceil(region.maxY);
+        if (span[5] < region.maxZ) span[5] = (int) Math.ceil(region.maxZ);
+        this.setDirty();
     }
 
     public int reachOf(UUID playerId)
     {
         return this.arenaReach.getOrDefault(playerId, 0);
+    }
+
+    /** 本场真实写过的区域；没记过就是 null（调用点回退到按声明尺寸算的盒子）。 */
+    @Nullable
+    public AABB builtBoxOf(UUID playerId)
+    {
+        int[] span = this.arenaBuilt.get(playerId);
+        return span == null || span.length < 6 ? null
+                : new AABB(span[0], span[1], span[2], span[3], span[4], span[5]);
+    }
+
+    private static int[] spanOf(AABB region)
+    {
+        return new int[] {(int) Math.floor(region.minX), (int) Math.floor(region.minY),
+                (int) Math.floor(region.minZ), (int) Math.ceil(region.maxX), (int) Math.ceil(region.maxY),
+                (int) Math.ceil(region.maxZ)};
     }
 
     public Map<UUID, Integer> cellsSnapshot()
@@ -351,6 +418,7 @@ public class TrialManager extends SavedData
                 dimension, origin);
         session.cell = cell;
         session.mode = definition.mode; // 开局就钉住玩法，之后不再靠反查定义（见 TrialSession#mode）
+        session.seed = player.serverLevel().getRandom().nextLong(); // 这一局的布局从此可复现
 
         if (definition.isEndless())
         {
@@ -362,7 +430,7 @@ public class TrialManager extends SavedData
         if (definition.mode == TrialMode.TRIAL)
         {
             int normalRooms = Math.max(1, definition.finiteWaveCount() - 1);
-            session.roomPlan = RoomLibrary.plan(normalRooms, player.serverLevel().getRandom());
+            session.roomPlan = RoomLibrary.plan(normalRooms, RandomSource.create(session.seed));
             if (session.roomPlan == null)
             {
                 TrialFeedback.failure(player, "房间池不够：需要至少 1 间普通房与 1 间 BOSS 房（data/"
@@ -692,6 +760,7 @@ public class TrialManager extends SavedData
                 dimension, origin);
         session.cell = cell;
         session.mode = TrialMode.CHALLENGE;
+        session.seed = player.serverLevel().getRandom().nextLong();
         session.challengeId = challenge.id();
         session.difficulty = difficultyKey;
         session.remainingTicks = challenge.durationTicks;
@@ -887,14 +956,19 @@ public class TrialManager extends SavedData
                 session.origin.getZ() + cursor);
         if (session.reach > 0)
         {
-            RoomBuilder.buildCorridor(level, session.origin.getX(), session.origin.getZ() + session.reach,
-                    origin.getZ() - 1, RoomBuilder.entryFloor(), RoomBuilder.entryWall());
+            AABB corridor = RoomBuilder.buildCorridor(level, session.origin.getX(),
+                    session.origin.getZ() + session.reach, origin.getZ() - 1,
+                    RoomBuilder.entryFloor(), RoomBuilder.entryWall(),
+                    RoomBuilder.defaultLight(), RoomBuilder.defaultLightSpacing());
+            session.region = session.region == null ? corridor : join(session.region, corridor);
         }
-        RoomBuilder.Built built = RoomBuilder.build(level, room, origin, level.getRandom());
+        RoomBuilder.Built built = RoomBuilder.build(level, room, origin,
+                RandomSource.create(session.seed + session.waveIndex * 31L)); // 每波布局不同，但同一场可复现
         session.spawnPoints = built.spawnPoints();
+        session.bossAnchor = room.bossRoom ? room.bossAnchor(origin) : null;
         session.region = session.region == null ? built.region() : join(session.region, built.region());
         session.reach = origin.getZ() + room.depth() - session.origin.getZ();
-        recordReach(player.getUUID(), session.reach);
+        recordBuilt(player.getUUID(), session.reach, session.region);
         LOGGER.info("[trial_portal] 第 {} 波建房 {} @ {} 室内 {}x{}x{} 站怪点 {} 个 进深 {}",
                 session.waveNumber(), room.id(), origin.toShortString(),
                 room.width(), room.height(), room.depth(), built.spawnPoints().size(), session.reach);
@@ -911,9 +985,13 @@ public class TrialManager extends SavedData
     private boolean spawnOne(ServerLevel level, ServerPlayer owner, TrialSession session, TrialDefinition definition,
                              TrialDefinition.WaveContent content, TrialDefinition.MobEntry entry)
     {
-        Vec3 position = session.spawnPoints == null || session.spawnPoints.isEmpty()
-                ? findSpawnPosition(level, session.origin, definition.spawnRadiusOrDefault(), definition.spawnHeightOrDefault())
-                : Vec3.atBottomCenterOf(session.spawnPoints.get(session.spawnCursor++ % session.spawnPoints.size()));
+        // BOSS 站这间 BOSS 房中心的舞台（三对柱子围出来的那块地），不跟小怪一起排在内圈门边
+        Vec3 position = entry.boss && session.bossAnchor != null
+                ? Vec3.atBottomCenterOf(session.bossAnchor)
+                : session.spawnPoints == null || session.spawnPoints.isEmpty()
+                        ? findSpawnPosition(level, session.origin, definition.spawnRadiusOrDefault(),
+                                definition.spawnHeightOrDefault())
+                        : Vec3.atBottomCenterOf(session.spawnPoints.get(session.spawnCursor++ % session.spawnPoints.size()));
         Mob mob = createMobAt(level, entry, position);
         if (mob == null)
         {

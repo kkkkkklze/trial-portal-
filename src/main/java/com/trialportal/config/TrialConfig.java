@@ -34,6 +34,8 @@ public final class TrialConfig
     public static final ForgeConfigSpec.IntValue ARENA_CELL_SPACING;
     public static final ForgeConfigSpec.IntValue ARENA_PLATFORM_RADIUS;
     public static final ForgeConfigSpec.IntValue ARENA_FENCE_HEIGHT;
+    public static final ForgeConfigSpec.ConfigValue<String> ARENA_LIGHT_BLOCK;
+    public static final ForgeConfigSpec.IntValue ARENA_LIGHT_SPACING;
     public static final ForgeConfigSpec.ConfigValue<String> ARENA_PLATFORM_BLOCK;
     public static final ForgeConfigSpec.BooleanValue ARENA_CLEAR_CELL_ON_END;
 
@@ -113,6 +115,15 @@ public final class TrialConfig
                 .comment("台面围栏高度（格，玻璃）。怪能跳 1 格，2 格就关得住，默认 3 留余量："
                         + "矮了怪会顺着台沿走出场地、也被玩家轻易打下虚空。朝房间那一侧的门洞同样高")
                 .defineInRange("fence_height", 3, 1, 8);
+        ARENA_LIGHT_BLOCK = BUILDER
+                .comment("隔间与走廊的默认灯方块。维度是 ambient_light=0.15 且无天光，没灯的房等于黑盒子。"
+                        + "光照等级（本机 1.20.1 源码核过）：shroomlight / glowstone / sea_lantern / lantern = 15，"
+                        + "soul_lantern = 10（更柔和，保留暗部）。房间可以用 light_block 字段各自覆盖")
+                .define("light_block", "minecraft:shroomlight");
+        ARENA_LIGHT_SPACING = BUILDER
+                .comment("灯的间隔（格），沿墙环与走廊每隔这么多放一盏；0 = 全场不布灯。"
+                        + "梯度靠间距而不是抬全局环境光——抬环境光会把明暗差抹平")
+                .defineInRange("light_spacing", 6, 0, 32);
         ARENA_PLATFORM_BLOCK = BUILDER
                 .comment("平台材质（方块 ID）")
                 .define("platform_block", "minecraft:polished_blackstone_bricks");

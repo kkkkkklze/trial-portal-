@@ -36,6 +36,14 @@ public class RoomDefinition
     @SerializedName("ceiling")
     public boolean ceiling;
 
+    /** 灯方块 ID；空 = 用配置里的默认灯（{@code arena.light_block}）。 */
+    @SerializedName("light_block")
+    public String lightBlock = "";
+
+    /** 灯沿墙环的间隔（格）；0 = 用配置里的默认间距。 */
+    @SerializedName("light_spacing")
+    public int lightSpacing;
+
     /** 遮挡物：随机撒在室内的方块，用来挡视线与弹道。 */
     @SerializedName("cover")
     public List<CoverEntry> cover = new ArrayList<>();
@@ -43,6 +51,14 @@ public class RoomDefinition
     /** 柱子对数（沿中轴线对称），0 = 不立柱。 */
     @SerializedName("pillars")
     public int pillars;
+
+    /** 立柱材质；空 = 雕纹黑石砖柱。 */
+    @SerializedName("pillar_block")
+    public String pillarBlock = "";
+
+    /** 柱高（格）；0 = 从地板一直顶到天花板（以前写死 4，8 格高的厅里柱子就成了半截桩）。 */
+    @SerializedName("pillar_height")
+    public int pillarHeight;
 
     /** 站怪点数量。 */
     @SerializedName("spawn_points")
@@ -118,6 +134,24 @@ public class RoomDefinition
         if (this.spawnPoints > interiorCells(w, d))
         {
             return "spawn_points " + this.spawnPoints + " 超过室内可放点上限 " + interiorCells(w, d);
+        }
+        if (this.pillarBlock != null && !this.pillarBlock.isBlank()
+                && ResourceLocation.tryParse(this.pillarBlock) == null)
+        {
+            return "pillar_block 不是合法方块 ID（" + this.pillarBlock + "）";
+        }
+        if (this.pillarHeight < 0 || this.pillarHeight > 16)
+        {
+            return "pillar_height 要在 0~16 之间（0 = 顶到天花板），当前 " + this.pillarHeight;
+        }
+        if (this.lightBlock != null && !this.lightBlock.isBlank()
+                && ResourceLocation.tryParse(this.lightBlock) == null)
+        {
+            return "light_block 不是合法方块 ID（" + this.lightBlock + "）";
+        }
+        if (this.lightSpacing < 0 || this.lightSpacing > 32)
+        {
+            return "light_spacing 要在 0~32 之间（0 = 用配置默认），当前 " + this.lightSpacing;
         }
         String floorError = checkBlockId("floor", this.floor);
         if (floorError != null)

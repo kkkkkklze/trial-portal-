@@ -7,6 +7,9 @@
     11
   ],
   "ceiling": true,
+  "pillars": 2,
+  "pillar_block": "minecraft:gilded_blackstone",
+  "light_spacing": 4,
   "spawn_points": 5,
   "mob_cap": 10,
   "cover": [

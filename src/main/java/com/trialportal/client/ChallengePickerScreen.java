@@ -70,6 +70,9 @@ public class ChallengePickerScreen extends Screen
         int listTop = top + 26;
         this.list = new ChallengeList(this.minecraft, listTop, listTop + 104, row -> select(row.index()));
         this.list.setRenderBackground(false);
+        // 列表默认会在自己上下沿各铺一条原版泥土底纹（AbstractSelectionList#renderTopAndBottom），
+        // 贴在黑石砖面板上就是"UI 上面多了泥土的贴图"；淡出遮罩留着，它只是渐变不是贴图。
+        this.list.setRenderTopAndBottom(false);
         // 列表默认贴着屏幕左缘自己居中，得显式挪进面板里那一列
         this.list.setLeftPos((this.width - PANEL_WIDTH) / 2 + 12);
         this.list.addRows(this.entries);

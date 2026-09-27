@@ -78,6 +78,18 @@ public class TrialSession
     public int kills;
     /** 本局的生成点/怪表轮询游标。必须按会话存：放在 manager 上就是全场共用，两个人同时开怪会互相推进落点。 */
     public int spawnCursor;
+    /**
+     * 最近建出来的那间 BOSS 房的中心舞台。BOSS 要站在这儿，而不是跟小怪一起排在内圈门边——
+     * 房间表里三对柱子围出来的那块地就是为它留的（{@code RoomDefinition.bossAnchor}）。
+     */
+    @Nullable
+    public BlockPos bossAnchor;
+    /**
+     * 本局的布局种子，开局那一刻掷一次。房间序列与室内的遮挡物都从它派生，
+     * 所以"同一场重进还是那个布局"、而 #24 的外观变体也有地方挂。
+     * 以前直接吃 {@code level.getRandom()}：同一场每次 tick 都在动世界随机流，布局既不可复现也没法按人区分。
+     */
+    public long seed;
 
     public TrialSession(UUID playerId, String playerName, String definitionId, ResourceKey<Level> dimension, BlockPos origin)
     {
