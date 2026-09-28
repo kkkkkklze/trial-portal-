@@ -20,5 +20,19 @@
     }
   ],
   "floor": "minecraft:polished_blackstone_bricks",
-  "wall": "minecraft:blackstone"
+  "wall": "minecraft:blackstone",
+  "variants": [
+    {
+      "name": "圆厅",
+      "floor_pattern": "border",
+      "pattern_block": "minecraft:cracked_polished_blackstone_bricks"
+    },
+    {
+      "name": "玄武圆厅",
+      "floor": "minecraft:basalt",
+      "wall": "minecraft:polished_blackstone_bricks",
+      "ceiling_block": "minecraft:blackstone",
+      "pillar_block": "minecraft:polished_blackstone"
+    }
+  ]
 }

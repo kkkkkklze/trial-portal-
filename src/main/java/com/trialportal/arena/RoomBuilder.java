@@ -35,15 +35,24 @@ public final class RoomBuilder
     public record Built(RoomDefinition room, BlockPos origin, List<BlockPos> spawnPoints, AABB region) {}
 
     /** @return 建成后这间房真实写过的矩形区域（含外墙），拆场与范围判定都按它算 */
-    public static Built build(ServerLevel level, RoomDefinition room, BlockPos origin, RandomSource random)
+    public static Built build(ServerLevel level, RoomDefinition room, BlockPos origin, RandomSource random,
+                              @Nullable RoomDefinition.Palette palette)
     {
         int w = room.width();
         int h = room.height();
         int d = room.depth();
-        BlockState floor = blockState(room.floor, Blocks.POLISHED_BLACKSTONE_BRICKS);
-        BlockState wall = blockState(room.wall, Blocks.BLACKSTONE);
-        BlockState light = lightState(room);
-        int spacing = lightSpacing(room);
+        RoomDefinition.Palette used = palette == null ? room.paletteFor(0L) : palette;
+        BlockState floor = blockState(used.floor, Blocks.POLISHED_BLACKSTONE_BRICKS);
+        BlockState wall = blockState(used.wall, Blocks.BLACKSTONE);
+        BlockState ceiling = blank(used.ceilingBlock) ? wall : blockState(used.ceilingBlock, Blocks.BLACKSTONE);
+        BlockState pillar = blank(used.pillarBlock)
+                ? Blocks.CHISELED_POLISHED_BLACKSTONE.defaultBlockState()
+                : blockState(used.pillarBlock, Blocks.CHISELED_POLISHED_BLACKSTONE);
+        BlockState accent = blank(used.patternBlock) ? pillar : blockState(used.patternBlock, Blocks.BLACKSTONE);
+        boolean checker = "checker".equals(used.floorPattern);
+        boolean border = "border".equals(used.floorPattern);
+        BlockState light = lightState(room, used);
+        int spacing = lightSpacing(room, used);
         Brush brush = new Brush(level);
 
         forceChunks(level, origin, w, d);
@@ -52,7 +61,9 @@ public final class RoomBuilder
         {
             for (int dz = 0; dz <= d + 1; dz++)
             {
-                brush.put(origin.offset(dx - 1, 0, dz - 1), floor);
+                boolean edgeTile = dx == 0 || dz == 0 || dx == w + 1 || dz == d + 1;
+                boolean patterned = (checker && (dx + dz) % 2 == 0) || (border && edgeTile);
+                brush.put(origin.offset(dx - 1, 0, dz - 1), patterned ? accent : floor);
             }
         }
         // 内部清空 + 外墙（dy 从 1 起是可行走层，到 h 为止）
@@ -83,15 +94,11 @@ public final class RoomBuilder
                 }
                 if (room.ceiling)
                 {
-                    brush.put(origin.offset(dx, h + 1, dz), wall);
+                    brush.put(origin.offset(dx, h + 1, dz), ceiling);
                 }
             }
         }
-        // 立柱：沿中轴线左右对称，默认从地板顶到天花板
-        BlockState pillar = blockState(
-                room.pillarBlock == null || room.pillarBlock.isBlank()
-                        ? "minecraft:chiseled_polished_blackstone" : room.pillarBlock,
-                Blocks.CHISELED_POLISHED_BLACKSTONE);
+        // 立柱：沿中轴线左右对称，默认从地板顶到天花板（材质取自这一套外观）
         int pillarTop = room.pillarHeight > 0 ? Math.min(h, room.pillarHeight) : h;
         for (int i = 0; i < room.pillars; i++)
         {
@@ -223,36 +230,44 @@ public final class RoomBuilder
     @Nullable
     public static BlockState defaultLight()
     {
-        return lightState(null);
+        return lightState(null, null);
     }
 
     public static int defaultLightSpacing()
     {
-        return lightSpacing(null);
+        return lightSpacing(null, null);
     }
 
-    /** 这间房用什么灯：房间自己写了就用房间的，否则退回 {@code arena.light_block}。返回 null = 不布灯。 */
-    @Nullable
-    private static BlockState lightState(@Nullable RoomDefinition room)
+    private static boolean blank(String value)
     {
-        String configured = room == null || room.lightBlock == null || room.lightBlock.isBlank()
-                ? TrialConfig.ARENA_LIGHT_BLOCK.get() : room.lightBlock;
+        return value == null || value.isBlank();
+    }
+
+    /**
+     * 这间房用什么灯：外观套 → 房间默认 → 配置 {@code arena.light_block}。返回 null = 不布灯。
+     * 房间自己写了却不存在的方块不再静默回退——那等于"配了灯但房还是黑的"，直接不布灯并 warn。
+     */
+    @Nullable
+    private static BlockState lightState(@Nullable RoomDefinition room, @Nullable RoomDefinition.Palette palette)
+    {
+        String configured = palette != null && !blank(palette.lightBlock) ? palette.lightBlock
+                : (room != null && !blank(room.lightBlock) ? room.lightBlock : TrialConfig.ARENA_LIGHT_BLOCK.get());
+        if (blank(configured))
+        {
+            return null;
+        }
         ResourceLocation key = ResourceLocation.tryParse(configured);
         Block block = key == null ? null : ForgeRegistries.BLOCKS.getValue(key);
         if (block == null)
         {
-            if (configured != null && !configured.isBlank() && room != null)
-            {
-                LOGGER.warn("[trial_portal] 房间 {} 的 light_block {} 不存在，这间隔间不布灯",
-                        room.id(), configured);
-            }
+            LOGGER.warn("[trial_portal] 灯方块 {} 不存在，这间隔间不布灯", configured);
             return null;
         }
         return block.defaultBlockState();
     }
 
     /** 灯的间隔：房间没写就用配置默认。0 = 不布灯。 */
-    private static int lightSpacing(@Nullable RoomDefinition room)
+    private static int lightSpacing(@Nullable RoomDefinition room, @Nullable RoomDefinition.Palette palette)
     {
         if (room != null && room.lightSpacing > 0)
         {

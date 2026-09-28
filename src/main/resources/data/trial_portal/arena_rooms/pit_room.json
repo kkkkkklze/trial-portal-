@@ -15,5 +15,20 @@
     }
   ],
   "floor": "minecraft:polished_blackstone_bricks",
-  "wall": "minecraft:blackstone"
+  "wall": "minecraft:blackstone",
+  "variants": [
+    {
+      "name": "玄武岩坑",
+      "floor": "minecraft:blackstone",
+      "wall": "minecraft:basalt",
+      "floor_pattern": "checker",
+      "pattern_block": "minecraft:polished_blackstone"
+    },
+    {
+      "name": "深板岩坑",
+      "floor": "minecraft:cobbled_deepslate",
+      "wall": "minecraft:deepslate",
+      "ceiling_block": "minecraft:blackstone"
+    }
+  ]
 }

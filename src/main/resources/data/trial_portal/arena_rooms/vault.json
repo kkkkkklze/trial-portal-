@@ -23,5 +23,19 @@
     }
   ],
   "floor": "minecraft:polished_blackstone_bricks",
-  "wall": "minecraft:blackstone"
+  "wall": "minecraft:blackstone",
+  "variants": [
+    {
+      "name": "黑石库",
+      "pillar_block": "minecraft:gilded_blackstone"
+    },
+    {
+      "name": "深板岩库",
+      "floor": "minecraft:cobbled_deepslate",
+      "wall": "minecraft:deepslate_bricks",
+      "pillar_block": "minecraft:polished_deepslate",
+      "floor_pattern": "checker",
+      "pattern_block": "minecraft:deepslate_tiles"
+    }
+  ]
 }

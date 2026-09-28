@@ -48,6 +48,22 @@ public class RoomDefinition
     @SerializedName("cover")
     public List<CoverEntry> cover = new ArrayList<>();
 
+    /**
+     * 外观变体：同一间房、同样的尺寸与站怪点，换一套材质。开局按会话种子挑一套，
+     * 于是"同一间房第二次进来长得不一样"，而房间几何与刷怪完全不变（改的只是外观）。
+     * 每个字段留空就沿用上面那份默认。
+     */
+    @SerializedName("variants")
+    public List<Palette> variants = new ArrayList<>();
+
+    /** 地板花纹：none / checker（隔格拼花）/ border（内圈一道边）。 */
+    @SerializedName("floor_pattern")
+    public String floorPattern = "none";
+
+    /** 天花板材质；空 = 跟墙同材质。 */
+    @SerializedName("ceiling_block")
+    public String ceilingBlock = "";
+
     /** 柱子对数（沿中轴线对称），0 = 不立柱。 */
     @SerializedName("pillars")
     public int pillars;
@@ -175,6 +191,19 @@ public class RoomDefinition
                 return "cover 里 " + entry.block + " 的 count 不能为负";
             }
         }
+        String patternError = checkPattern("floor_pattern", this.floorPattern);
+        if (patternError != null)
+        {
+            return patternError;
+        }
+        for (Palette variant : this.variants)
+        {
+            String variantError = variant.resolve(id);
+            if (variantError != null)
+            {
+                return variantError;
+            }
+        }
         if (this.pillars < 0 || this.pillars * 4 >= Math.min(w, d))
         {
             return "pillars " + this.pillars + " 太多，房间 " + w + "x" + d + " 放不下";
@@ -205,6 +234,19 @@ public class RoomDefinition
         }
         return null;
     }
+
+    /** 花纹名字写错以前只会静默按 none 处理，这里直接红。 */
+    @Nullable
+    private static String checkPattern(String field, String value)
+    {
+        if (value == null || value.isBlank() || FLOOR_PATTERNS.contains(value))
+        {
+            return null;
+        }
+        return field + " 只认 " + String.join("/", FLOOR_PATTERNS) + "（当前 " + value + "）";
+    }
+
+    private static final List<String> FLOOR_PATTERNS = List.of("none", "checker", "border");
 
     /**
      * 室内站怪点：沿内圈顺时针均分，够不着就退回中心区。
@@ -248,5 +290,88 @@ public class RoomDefinition
 
         @SerializedName("count")
         public int count = 1;
+    }
+
+    /**
+     * 一套外观。当变体用时，留空的字段沿用房间默认；当解析结果用时（{@link #paletteFor}）所有字段都已定。
+     */
+    public static class Palette
+    {
+        @SerializedName("name")
+        public String name;
+        @SerializedName("floor")
+        public String floor;
+        @SerializedName("wall")
+        public String wall;
+        @SerializedName("ceiling_block")
+        public String ceilingBlock;
+        @SerializedName("pillar_block")
+        public String pillarBlock;
+        @SerializedName("light_block")
+        public String lightBlock;
+        @SerializedName("floor_pattern")
+        public String floorPattern;
+        /** 花纹的第二个材质（checker 的隔格、border 的那道边）；空 = 用柱子材质。 */
+        @SerializedName("pattern_block")
+        public String patternBlock;
+
+        @Nullable
+        String resolve(String roomId)
+        {
+            String where = "房间 " + roomId + " 的变体 " + (this.name == null ? "?" : this.name);
+            for (String candidate : new String[] {this.floor, this.wall, this.ceilingBlock, this.pillarBlock,
+                    this.lightBlock, this.patternBlock})
+            {
+                if (candidate != null && !candidate.isBlank() && ResourceLocation.tryParse(candidate) == null)
+                {
+                    return where + " 含非法方块 ID（" + candidate + "）";
+                }
+            }
+            String patternError = checkPattern(where + " 的 floor_pattern", this.floorPattern);
+            if (patternError != null)
+            {
+                return patternError;
+            }
+            if (this.floor != null && this.floor.isBlank() && this.wall != null && this.wall.isBlank()
+                    && this.pillarBlock != null && this.pillarBlock.isBlank() && this.ceilingBlock != null
+                    && this.ceilingBlock.isBlank() && this.lightBlock != null && this.lightBlock.isBlank()
+                    && (this.floorPattern == null || this.floorPattern.isBlank() || "none".equals(this.floorPattern)))
+            {
+                return where + " 一个字段都没填，这套变体是空的（多半是键名拼错了）";
+            }
+            return null;
+        }
+    }
+
+    /** 变体套在默认之上：谁写了听谁的。 */
+    public Palette mergedPalette(@Nullable Palette variant)
+    {
+        Palette merged = new Palette();
+        merged.floor = pick(variant == null ? null : variant.floor, floor);
+        merged.wall = pick(variant == null ? null : variant.wall, wall);
+        merged.ceilingBlock = pick(variant == null ? null : variant.ceilingBlock, ceilingBlock);
+        merged.pillarBlock = pick(variant == null ? null : variant.pillarBlock, pillarBlock);
+        merged.lightBlock = pick(variant == null ? null : variant.lightBlock, lightBlock);
+        merged.floorPattern = pick(variant == null ? null : variant.floorPattern, floorPattern);
+        merged.patternBlock = pick(variant == null ? null : variant.patternBlock,
+                variant == null ? null : variant.pillarBlock);
+        merged.name = variant == null ? null : variant.name;
+        return merged;
+    }
+
+    /** 按种子挑一套外观：同一场会话里稳定（玩家能背板），换一场就可能不一样。 */
+    public Palette paletteFor(long seed)
+    {
+        if (this.variants == null || this.variants.isEmpty())
+        {
+            return mergedPalette(null);
+        }
+        int index = (int) Math.floorMod(seed, this.variants.size());
+        return mergedPalette(this.variants.get(index));
+    }
+
+    private static String pick(@Nullable String override, String fallback)
+    {
+        return override != null && !override.isBlank() ? override : fallback;
     }
 }

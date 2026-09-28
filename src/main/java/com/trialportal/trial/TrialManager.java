@@ -930,8 +930,9 @@ public class TrialManager extends SavedData
                     RoomBuilder.defaultLight(), RoomBuilder.defaultLightSpacing());
             session.region = session.region == null ? corridor : join(session.region, corridor);
         }
+        long layoutSeed = session.seed + session.waveIndex * 31L; // 每波布局不同，但同一场可复现
         RoomBuilder.Built built = RoomBuilder.build(level, room, origin,
-                RandomSource.create(session.seed + session.waveIndex * 31L)); // 每波布局不同，但同一场可复现
+                RandomSource.create(layoutSeed), room.paletteFor(layoutSeed));
         session.spawnPoints = built.spawnPoints();
         session.bossAnchor = room.bossRoom ? room.bossAnchor(origin) : null;
         session.region = session.region == null ? built.region() : join(session.region, built.region());

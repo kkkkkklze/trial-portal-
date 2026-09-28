@@ -15,5 +15,22 @@
     }
   ],
   "floor": "minecraft:polished_blackstone_bricks",
-  "wall": "minecraft:blackstone"
+  "wall": "minecraft:blackstone",
+  "variants": [
+    {
+      "name": "旧砖厅",
+      "floor": "minecraft:cracked_polished_blackstone_bricks",
+      "wall": "minecraft:polished_blackstone",
+      "floor_pattern": "border",
+      "pattern_block": "minecraft:chiseled_polished_blackstone"
+    },
+    {
+      "name": "苔石厅",
+      "floor": "minecraft:stone_bricks",
+      "wall": "minecraft:mossy_stone_bricks",
+      "floor_pattern": "checker",
+      "pattern_block": "minecraft:cobblestone",
+      "pillar_block": "minecraft:mossy_cobblestone"
+    }
+  ]
 }

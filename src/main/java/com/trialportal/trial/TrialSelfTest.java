@@ -399,7 +399,8 @@ public final class TrialSelfTest
                     BlockPos roomOrigin = cellOrigin.offset(-room.width() / 2, 0,
                             com.trialportal.arena.ArenaService.radius() + 4);
                     com.trialportal.arena.RoomBuilder.Built built = com.trialportal.arena.RoomBuilder.build(
-                            arenaLevel, room, roomOrigin, net.minecraft.util.RandomSource.create(4321L));
+                            arenaLevel, room, roomOrigin, net.minecraft.util.RandomSource.create(4321L),
+                            room.paletteFor(4321L));
                     // 地板要和隔间平台同一层，否则走廊与房间差一格，玩家走进去会掉一下
                     check(failures, isGround(arenaLevel, roomOrigin),
                             "地板必须落在 origin.y 这一层（与大厅平台同约定），"
@@ -459,6 +460,8 @@ public final class TrialSelfTest
                     probeRoomBlocksResolve(failures);
                     // 同一颗种子建出同一份布局
                     probeLayoutIsSeedDriven(arenaLevel, failures);
+                    // 外观变体按种子挑、花纹落地、拆场清得干净
+                    probeAppearanceVariants(arenaLevel, failures);
                 }
             }
         }
@@ -777,7 +780,7 @@ public final class TrialSelfTest
             BlockPos origin = cellOrigin.offset(-probe.width() / 2, 0,
                     com.trialportal.arena.ArenaService.radius() + 4);
             com.trialportal.arena.RoomBuilder.build(arenaLevel, probe, origin,
-                    net.minecraft.util.RandomSource.create(777L));
+                    net.minecraft.util.RandomSource.create(777L), probe.paletteFor(777L));
             int reach = origin.getZ() + probe.depth() - cellOrigin.getZ();
             com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, 5, reach);
             int left = countRoomBlocks(arenaLevel, origin, probe);
@@ -841,7 +844,7 @@ public final class TrialSelfTest
         BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(cell);
         BlockPos origin = cellOrigin.offset(-room.width() / 2, 0, com.trialportal.arena.ArenaService.radius() + 4);
         com.trialportal.arena.RoomBuilder.build(arenaLevel, room, origin,
-                net.minecraft.util.RandomSource.create(4711L));
+                net.minecraft.util.RandomSource.create(4711L), room.paletteFor(4711L));
         int lamps = countLamps(arenaLevel, origin, room);
         check(failures, lamps >= 4,
                 "墙环上只找到 " + lamps + " 盏灯（light_spacing=2 的 7x7 房该有一排）——灯没嵌进墙里，房还是黑的");
@@ -888,7 +891,7 @@ public final class TrialSelfTest
         BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(9);
         BlockPos origin = cellOrigin.offset(-room.width() / 2, 0, com.trialportal.arena.ArenaService.radius() + 4);
         com.trialportal.arena.RoomBuilder.build(arenaLevel, room, origin,
-                net.minecraft.util.RandomSource.create(1313L));
+                net.minecraft.util.RandomSource.create(1313L), room.paletteFor(1313L));
         BlockPos column = origin.offset(2, 1, 2);
         int tall = 0;
         for (int dy = 1; dy <= room.height(); dy++)
@@ -912,6 +915,68 @@ public final class TrialSelfTest
     }
 
     /**
+     * 外观变体（#24）：同一间房按会话种子换材质，几何与站怪点不许变；花纹要真的落到地板上；
+     * 拆场必须把变体材质一起清干净（笔刷记的就是真实足迹）。
+     */
+    private static void probeAppearanceVariants(ServerLevel arenaLevel, List<String> failures)
+    {
+        RoomDefinition room = RoomLibrary.get("trial_portal:hall_small");
+        if (room == null || room.variants.size() < 2)
+        {
+            check(failures, false, "小厅没配至少两套 variants，外观多样性判据没跑");
+            return;
+        }
+        RoomDefinition.Palette first = room.paletteFor(0L);
+        RoomDefinition.Palette second = room.paletteFor(1L);
+        check(failures, room.paletteFor(0L).floor.equals(first.floor)
+                        && room.paletteFor(0L).wall.equals(first.wall),
+                "同一颗种子必须挑到同一套外观（玩家能背板，不能每次进都换一套）");
+        check(failures, !first.floor.equals(second.floor) || !first.wall.equals(second.wall),
+                "两颗相邻种子挑出了同一套外观：paletteFor 没按种子取模");
+        check(failures, !first.floor.equals(room.floor) || !second.floor.equals(room.floor),
+                "变体没覆盖房间默认材质（floor 仍是房间自己那份）");
+
+        int cellA = 14;
+        int cellB = 15;
+        int offset = com.trialportal.arena.ArenaService.radius() + 4;
+        BlockPos originA = com.trialportal.arena.ArenaService.cellOrigin(cellA).offset(-room.width() / 2, 0, offset);
+        BlockPos originB = com.trialportal.arena.ArenaService.cellOrigin(cellB).offset(-room.width() / 2, 0, offset);
+        com.trialportal.arena.RoomBuilder.Built builtA = com.trialportal.arena.RoomBuilder.build(arenaLevel, room,
+                originA, net.minecraft.util.RandomSource.create(2L), first);
+        com.trialportal.arena.RoomBuilder.Built builtB = com.trialportal.arena.RoomBuilder.build(arenaLevel, room,
+                originB, net.minecraft.util.RandomSource.create(2L), second);
+        check(failures, !arenaLevel.getBlockState(originA.offset(1, 0, 1)).isAir()
+                        && !arenaLevel.getBlockState(originA.offset(1, 0, 1))
+                        .equals(arenaLevel.getBlockState(originB.offset(1, 0, 1))),
+                "两套外观铺出来的地板是同一块方块（变体没生效）");
+        check(failures, builtA.spawnPoints().size() == builtB.spawnPoints().size()
+                        && builtA.region().getXsize() == builtB.region().getXsize(),
+                "换外观不该动几何：站怪点数量或房间尺寸变了");
+        int accent = 0;
+        for (int dx = 0; dx <= room.width() + 1; dx++)
+        {
+            for (int dz = 0; dz <= room.depth() + 1; dz++)
+            {
+                if (arenaLevel.getBlockState(originA.offset(dx - 1, 0, dz - 1))
+                        .is(net.minecraft.world.level.block.Blocks.CHISELED_POLISHED_BLACKSTONE))
+                {
+                    accent++;
+                }
+            }
+        }
+        check(failures, accent > 0, "border 花纹一道都没铺出来（floor_pattern 或 pattern_block 没接上）");
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, cellA,
+                originA.getZ() + room.depth() - com.trialportal.arena.ArenaService.cellOrigin(cellA).getZ(),
+                builtA.region());
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, cellB,
+                originB.getZ() + room.depth() - com.trialportal.arena.ArenaService.cellOrigin(cellB).getZ(),
+                builtB.region());
+        check(failures, countRoomBlocks(arenaLevel, originA, room) == 0
+                        && countRoomBlocks(arenaLevel, originB, room) == 0,
+                "换外观之后拆场清不干净（变体材质留在虚空里）");
+    }
+
+    /**
      * 方块 ID 写法合法但注册表里根本没有——离线门看不见（它没有活注册表），运行期只会 warn 一句
      * 然后静默回退成默认材质。这一轮我自己就踩了一次：把柱子写成 polished_blackstone_pillar，
      * 黑石家族里根本没这块，房间会悄悄变回雕纹黑石砖。所以这条必须在有注册表的进程里查。
@@ -929,6 +994,15 @@ public final class TrialSelfTest
             for (RoomDefinition.CoverEntry cover : room.cover)
             {
                 candidates.add(cover.block);
+            }
+            for (RoomDefinition.Palette variant : room.variants)
+            {
+                candidates.add(variant.floor);
+                candidates.add(variant.wall);
+                candidates.add(variant.ceilingBlock);
+                candidates.add(variant.pillarBlock);
+                candidates.add(variant.lightBlock);
+                candidates.add(variant.patternBlock);
             }
             for (String id : candidates)
             {
@@ -971,8 +1045,10 @@ public final class TrialSelfTest
         BlockPos a = com.trialportal.arena.ArenaService.cellOrigin(10).offset(-room.width() / 2, 0, offset);
         BlockPos b = com.trialportal.arena.ArenaService.cellOrigin(11).offset(-room.width() / 2, 0, offset);
         long seed = 9001L;
-        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, a, net.minecraft.util.RandomSource.create(seed));
-        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, b, net.minecraft.util.RandomSource.create(seed));
+        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, a, net.minecraft.util.RandomSource.create(seed),
+                room.paletteFor(seed));
+        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, b, net.minecraft.util.RandomSource.create(seed),
+                room.paletteFor(seed));
         int mismatch = 0;
         for (int dx = 0; dx <= room.width() + 1; dx++)
         {
@@ -1053,7 +1129,7 @@ public final class TrialSelfTest
         com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, cellOrigin, TrialMode.TRIAL);
         BlockPos origin = cellOrigin.offset(-room.width() / 2, 0, radius + 4);
         com.trialportal.arena.RoomBuilder.Built probeBuilt = com.trialportal.arena.RoomBuilder.build(
-                arenaLevel, room, origin, net.minecraft.util.RandomSource.create(999L));
+                arenaLevel, room, origin, net.minecraft.util.RandomSource.create(999L), room.paletteFor(999L));
         manager.recordBuilt(probePlayer, origin.getZ() + room.depth() - cellOrigin.getZ(), probeBuilt.region());
         int recorded = manager.reachOf(probePlayer);
         check(failures, recorded > 0, "进深应记在账上，而不是只活在会话对象里");
