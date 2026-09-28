@@ -2,6 +2,7 @@ package com.trialportal.tools;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -20,9 +21,11 @@ import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -42,6 +45,7 @@ public final class TrialDataCheck
     private int checkedAffixes;
     private int checkedRooms;
     private int checkedChallenges;
+    private int checkedRecipes;
 
     public static void main(String[] args) throws IOException
     {
@@ -51,9 +55,11 @@ public final class TrialDataCheck
         check.checkTrials(root.resolve("trials"), affixes);
         check.checkRooms(root.resolve("arena_rooms"));
         check.checkChallenges(root.resolve("challenges"));
+        check.checkRecipes(root.resolve("recipes"));
 
-        System.out.printf(Locale.ROOT, "词条：%d 条；试炼：%d 份；房间：%d 间；副本：%d 份%n",
-                check.checkedAffixes, check.checkedTrials, check.checkedRooms, check.checkedChallenges);
+        System.out.printf(Locale.ROOT, "词条：%d 条；试炼：%d 份；房间：%d 间；副本：%d 份；配方：%d 条%n",
+                check.checkedAffixes, check.checkedTrials, check.checkedRooms, check.checkedChallenges,
+                check.checkedRecipes);
         if (check.problems.isEmpty())
         {
             System.out.println("checkTrialData 通过：没有字段缺失、没有失效引用、逐波逐层都能取到内容");
@@ -63,6 +69,216 @@ public final class TrialDataCheck
         check.problems.forEach(problem -> System.out.println("  - " + problem));
         System.exit(1);
     }
+
+    /**
+     * 配方按<b>原版的形状</b>判。离线进程里没有物品注册表（而且一碰 {@code ItemStack} 就要拉日志，
+     * 同 {@code BlockPos} 那条限制），所以这里只能查到"原版加载器会不会接受这份 JSON"这一层，
+     * 真能不能合成、产物是不是自家方块，由 {@code TrialSelfTest} 在有注册表的 JVM 里对账。
+     * <p>
+     * 文件名与产物必须一致：{@code tower_portal.json} 合成出 {@code challenge_portal} 这种复制粘贴漏改，
+     * 加载一切正常、运行期一声不响，只是有个门永远合不出来。
+     */
+    private void checkRecipes(Path directory) throws IOException
+    {
+        for (Path file : jsonFiles(directory))
+        {
+            String name = file.getFileName().toString().replace(".json", "");
+            String where = "配方 " + name;
+            checkedRecipes++;
+            JsonObject recipe;
+            try (Reader reader = Files.newBufferedReader(file))
+            {
+                JsonElement json = JsonParser.parseReader(reader);
+                if (!json.isJsonObject())
+                {
+                    problems.add(where + "：根不是对象");
+                    continue;
+                }
+                recipe = json.getAsJsonObject();
+            }
+            catch (Exception exception)
+            {
+                problems.add(where + "：JSON 解析失败 —— " + exception.getMessage());
+                continue;
+            }
+            for (String key : recipe.keySet())
+            {
+                if (!RECIPE_KEYS.contains(key))
+                {
+                    problems.add(where + "：不认识的值 " + key + "（原版会静默忽略它）");
+                }
+            }
+            String type = text(recipe, "type");
+            boolean shaped = "minecraft:crafting_shaped".equals(type);
+            if (!shaped && !"minecraft:crafting_shapeless".equals(type))
+            {
+                problems.add(where + "：type 只支持 crafting_shaped / crafting_shapeless，当前 " + type);
+                continue;
+            }
+            if (shaped && checkShaped(recipe, where))
+            {
+                continue; // 形状已经错了，产物那步不必再报
+            }
+            checkRecipeResult(recipe, name, where);
+        }
+    }
+
+    /** @return true 表示已记问题 */
+    private boolean checkShaped(JsonObject recipe, String where)
+    {
+        JsonElement patternJson = recipe.get("pattern");
+        if (patternJson == null || !patternJson.isJsonArray() || patternJson.getAsJsonArray().size() > 3)
+        {
+            problems.add(where + "：pattern 缺失或超过 3 行（合成格只有 3x3）");
+            return true;
+        }
+        JsonElement keyJson = recipe.get("key");
+        if (keyJson == null || !keyJson.isJsonObject())
+        {
+            problems.add(where + "：shaped 配方必须有 key");
+            return true;
+        }
+        JsonArray pattern = patternJson.getAsJsonArray();
+        JsonObject keys = keyJson.getAsJsonObject();
+        int width = -1;
+        Set<String> used = new HashSet<>();
+        for (JsonElement row : pattern)
+        {
+            String line = row.getAsString();
+            if (width < 0)
+            {
+                width = line.length();
+            }
+            else if (line.length() != width)
+            {
+                problems.add(where + "：pattern 每行必须等宽（" + width + " 与 " + line.length() + "）");
+                return true;
+            }
+            for (char symbol : line.toCharArray())
+            {
+                if (symbol == ' ')
+                {
+                    continue;
+                }
+                used.add(String.valueOf(symbol));
+                if (!keys.has(String.valueOf(symbol)))
+                {
+                    problems.add(where + "：pattern 用了 '" + symbol + "' 但 key 里没有这一项");
+                    return true;
+                }
+            }
+        }
+        for (String symbol : keys.keySet())
+        {
+            if (symbol.length() != 1)
+            {
+                problems.add(where + "：key 的键名必须是单个字符（当前 " + symbol + "）");
+                return true;
+            }
+            if (!used.contains(symbol))
+            {
+                problems.add(where + "：key 里的 '" + symbol + "' 没被 pattern 用到（多半是打错了）");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void checkRecipeResult(JsonObject recipe, String name, String where)
+    {
+        JsonElement resultJson = recipe.get("result");
+        if (resultJson == null || !resultJson.isJsonObject() || !resultJson.getAsJsonObject().has("item"))
+        {
+            problems.add(where + "：result 必须是带 item 的对象");
+            return;
+        }
+        JsonObject result = resultJson.getAsJsonObject();
+        String item = text(result, "item");
+        ResourceLocation key = ResourceLocation.tryParse(item);
+        if (key == null)
+        {
+            problems.add(where + "：result.item 不是合法 ID（" + item + "）");
+            return;
+        }
+        if (!"trial_portal".equals(key.getNamespace()))
+        {
+            problems.add(where + "：产物不是本模组的方块（" + item + "）");
+        }
+        if (!key.getPath().equals(name))
+        {
+            problems.add(where + "：文件名是 " + name + " 但产物是 " + key.getPath()
+                    + "（复制粘贴漏改，加载不报错、那个门却永远合不出来）");
+        }
+        if (result.has("count") && result.get("count").getAsInt() < 1)
+        {
+            problems.add(where + "：result.count 至少 1");
+        }
+        JsonElement ingredients = recipe.get("ingredients");
+        if (ingredients != null)
+        {
+            if (!ingredients.isJsonArray() || ingredients.getAsJsonArray().isEmpty())
+            {
+                problems.add(where + "：ingredients 必须是非空数组");
+                return;
+            }
+            for (JsonElement entry : ingredients.getAsJsonArray())
+            {
+                checkIngredientEntry(entry, where);
+            }
+        }
+        JsonElement keys = recipe.get("key");
+        if (keys != null && keys.isJsonObject())
+        {
+            for (String symbol : keys.getAsJsonObject().keySet())
+            {
+                JsonElement option = keys.getAsJsonObject().get(symbol);
+                if (option.isJsonArray())
+                {
+                    for (JsonElement each : option.getAsJsonArray())
+                    {
+                        checkIngredientEntry(each, where);
+                    }
+                }
+                else
+                {
+                    checkIngredientEntry(option, where);
+                }
+            }
+        }
+    }
+
+    /** 取一个字符串值；缺失或不是字符串就返回空串，交给调用方按"不合法 ID"报出来。 */
+    private static String text(JsonObject object, String field)
+    {
+        JsonElement value = object.get(field);
+        return value == null || !value.isJsonPrimitive() ? "" : value.getAsString();
+    }
+
+    /** 一份输入：必须是 {@code {"item": …}} 或 {@code {"tag": …}}，ID 写法要合法。 */
+    private void checkIngredientEntry(JsonElement entry, String where)
+    {
+        if (entry == null || !entry.isJsonObject())
+        {
+            problems.add(where + "：输入项必须是 {item} 或 {tag} 对象");
+            return;
+        }
+        JsonObject object = entry.getAsJsonObject();
+        String field = object.has("tag") ? "tag" : (object.has("item") ? "item" : null);
+        if (field == null)
+        {
+            problems.add(where + "：输入项既没有 item 也没有 tag");
+            return;
+        }
+        String value = text(object, field);
+        if (ResourceLocation.tryParse(value) == null)
+        {
+            problems.add(where + "：输入项的 " + field + " 不是合法 ID（" + value + "）");
+        }
+    }
+
+    /** 原版 1.20.1 合成配方认的值。写错名字原版加载器会静默忽略，所以这里直接红。 */
+    private static final Set<String> RECIPE_KEYS = Set.of(
+            "type", "group", "category", "pattern", "key", "ingredients", "result");
 
     /** 资源副本：三档难度必须齐全，且每档都要有怪、有上限、有补充节奏（杀奖可以为空，表示这档不给奖）。 */
     private void checkChallenges(Path directory) throws IOException

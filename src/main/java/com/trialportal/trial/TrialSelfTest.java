@@ -8,6 +8,7 @@ import com.trialportal.boss.BossAffix;
 import com.trialportal.boss.BossAffixLibrary;
 import com.trialportal.config.TrialConfig;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.NonNullList;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
@@ -22,6 +23,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.entity.monster.Vindicator;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -477,6 +479,9 @@ public final class TrialSelfTest
                 }
             }
         }
+
+        // 三个玩法门必须真能在生存里合出来（R8）
+        probePortalRecipes(server, failures);
 
         // 直接执行一遍 /tei trial list：比查指令树里有没有这个名字更硬
         try
@@ -1254,6 +1259,111 @@ public final class TrialSelfTest
         room.partitions.add(barrier(9, 7, 9, 11, 2));
         return room;
     }
+
+    /**
+     * 配方只有从 {@code RecipeManager} 里真取出来才算数：JSON 写坏或 id 打错时，原版加载器会把整条配方
+     * 丢掉而游戏照跑——玩家那边只是"这个门怎么也合不出来"，一声不响。
+     * 输入项还得逐个能匹配到某个已注册物品：id 写错时原版会把它当成空气，配方加载得成却永远摆不出来。
+     */
+    private static void probePortalRecipes(MinecraftServer server, List<String> failures)
+    {
+        Map<TrialMode, String> craftableByMode = new java.util.EnumMap<>(TrialMode.class);
+        List<String> unsatisfiable = new ArrayList<>();
+        List<String> blind = new ArrayList<>();
+        for (net.minecraft.world.item.crafting.Recipe<?> recipe : server.getRecipeManager()
+                .getAllRecipesFor(net.minecraft.world.item.crafting.RecipeType.CRAFTING))
+        {
+            ItemStack result = recipe.getResultItem(server.registryAccess());
+            if (!(result.getItem() instanceof net.minecraft.world.item.BlockItem blockItem)
+                    || !(blockItem.getBlock() instanceof TrialPortalBlock portal))
+            {
+                continue;
+            }
+            craftableByMode.put(portal.mode(), recipe.getId() + " ⇒ " + result.getItem());
+            NonNullList<Ingredient> ingredients = recipe.getIngredients();
+            if (ingredients.isEmpty())
+            {
+                blind.add(portal.mode().name());
+                continue;
+            }
+            for (Ingredient ingredient : ingredients)
+            {
+                String defect = ingredientDefect(ingredient, server.registryAccess());
+                if (defect != null)
+                {
+                    unsatisfiable.add(portal.mode() + "：" + defect);
+                }
+            }
+        }
+        check(failures, blind.isEmpty(),
+                "这些玩法门的配方取不到输入项，输入项判据会在假数据上跑绿：" + blind);
+        check(failures, unsatisfiable.isEmpty(), String.join("；", unsatisfiable)
+                + "（写错的 tag 就是这个样子：配方加载得成，却永远摆不出来）");
+        List<String> missing = new ArrayList<>();
+        for (TrialMode mode : TrialMode.values())
+        {
+            if (!craftableByMode.containsKey(mode))
+            {
+                missing.add(mode.name());
+            }
+        }
+        check(failures, missing.isEmpty(),
+                "这些玩法门没有生存配方，只能靠创造栏或 /give：" + missing + "（已配 " + craftableByMode + "）");
+    }
+
+    /**
+     * 输入项逐个对账：JSON 里写的那个 id 到底存不存在。
+     * <p>
+     * 为什么不能用现成的判据：写错的 id 在运行期是<b>静默替换</b>的。本轮实测——
+     * {@code {"tag":"minecraft:no_such_tag"}} 会被 Forge 换成 {@code minecraft:barrier}
+     * （所以 {@code getItems()} 非空、{@code test()} 也对 barrier 返回 true），
+     * {@code {"item":"minecraft:ender_prarl"}} 则是整条配方被原版丢掉（只有覆盖面那条判据看得见）。
+     * 两种都不报错，玩家那边只是"这个门合不出来"。所以要回到 id 本身去查注册表。
+     *
+     * @return null 表示这个输入项没问题
+     */
+    private static String ingredientDefect(Ingredient ingredient, net.minecraft.core.RegistryAccess access)
+    {
+        com.google.gson.JsonElement json = ingredient.toJson();
+        if (!json.isJsonObject())
+        {
+            return null; // 复合/自定义输入项（条件、差量那一类），不认识就放过
+        }
+        com.google.gson.JsonObject object = json.getAsJsonObject();
+        if (object.has("item"))
+        {
+            String written = object.get("item").getAsString();
+            net.minecraft.resources.ResourceLocation id = net.minecraft.resources.ResourceLocation.tryParse(written);
+            net.minecraft.world.item.Item item = id == null ? null
+                    : net.minecraftforge.registries.ForgeRegistries.ITEMS.getValue(id);
+            if (item == null || item == Items.AIR)
+            {
+                return "输入项的物品 " + written + " 不在物品注册表里（原版会把它换成空气，这一槽永远摆不出来）";
+            }
+            return null;
+        }
+        if (!object.has("tag"))
+        {
+            return null;
+        }
+        String written = object.get("tag").getAsString();
+        net.minecraft.resources.ResourceLocation id = net.minecraft.resources.ResourceLocation.tryParse(written);
+        if (id == null)
+        {
+            return "输入项的 tag 写法不合法（" + written + "）";
+        }
+        // 查注册表访问里的物品注册表：数据包定义的标签在这里，BuiltInRegistries 那份看不到
+        java.util.Optional<? extends net.minecraft.core.HolderSet.Named<net.minecraft.world.item.Item>> tagged =
+                access.registryOrThrow(net.minecraft.core.registries.Registries.ITEM)
+                        .getTag(net.minecraft.tags.TagKey.create(net.minecraft.core.registries.Registries.ITEM, id));
+        if (tagged.isEmpty() || tagged.get().size() == 0)
+        {
+            return "输入项的 tag " + written + " 里没有任何物品（Forge 会塞一个 barrier 顶替：配方加载得成，"
+                    + "但生存里没人摆得出来）";
+        }
+        return null;
+    }
+
 
     /**
      * 判据只有"玩家走得到"：从上一间屋里任意一格出发做洪水填充，看能不能真的踏进新房中心。

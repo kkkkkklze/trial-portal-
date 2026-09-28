@@ -37,16 +37,17 @@ Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼�
 | 命令 | 结果 |
 | --- | --- |
 | `./gradlew selfTest -PselfTest` | 绿，**43 条断言全过**；这道门不认退出码，只认 `run/selftest-result.txt` 里的 `PASS/FAIL` |
-| `./gradlew build` | 绿。含 `> Task :checkTrialData`（8 条词条 + 3 份试炼全通过）。产物 `build/libs/trial_portal-1.0.0.jar`（106 KB，38 个 class） |
+| `./gradlew build` | 绿。含 `> Task :checkTrialData`（8 条词条 + 3 份试炼 + 5 间房 + 2 份副本 + 3 条配方全通过）。产物 `build/libs/trial_portal-1.0.0.jar`（约 229 KB，68 个 class） |
 | `./gradlew checkTrialData` | 绿；两次反向测试（写坏 JSON）都以非 0 退出并点名条目 |
-| `./gradlew runGameTestServer -PselfTest` | 绿，**32 条运行期断言全通过**（数据包链路、BOSS 层取 mobs[0]、层段词条池生效、免疫真的取消伤害、属性修饰符随实体存档、NBT 往返一致、方块/物品注册、`/tei trial list` 真执行） |
+| `./gradlew selfTest -PselfTest`（= runGameTestServer + 标记对账） | 绿，**198 条运行期断言全通过**（数据包链路、BOSS 层取 mobs[0]、层段词条池生效、免疫真的取消伤害、属性修饰符随实体存档、NBT 往返一致、方块/物品注册、`/tei trial list` 真执行） |
 | `./gradlew runGameTestServer` | 绿，服务端完整启动 + `已加载 3 份 试炼 定义 / 8 份 BOSS 词条 定义`，不需要 EULA |
 | `./gradlew runData` | 绿，但**不算加载验证**（见下） |
 | `runClient` + playtest-bridge | 绿：真客户端跑完「右键开局 → 波次推进 → 潜行结算发奖（`/clear` 数到 5 件铁锭）→ 死亡转存 → bind 换爬塔 → 续关第 13 层 → BOSS 三词条 79.2 血」 |
 | `runServer` | 未跑（要你自己同意 EULA） |
 
-玩法实现：23 个类 / 3,478 行 + 1 个工具类，数据包 3 份试炼 + 8 条词条 + 3 份掉落表 + 12 份资源。
-**还没有**：配方、客户端信息面板、真正的可穿越传送门、组队、原版 GameTest（缺结构模板，走 `-PselfTest` 通道）。
+全工程 35 个 Java 类 / 9,193 行 + 1 个离线校验工具类；数据包 3 份试炼 + 8 条词条 + 5 间房 + 2 份副本 + 3 条配方 + 3 份掉落表。
+**还没有**：客户端信息面板、真正的可穿越传送门、组队、原版 GameTest（缺结构模板，走 `-PselfTest` 通道）。
+**当前卡住的一环**：`run/eula.txt` 不在 `run/` 里，客户端起不来 ⇒ 真机截图那类判据暂时补不上（不会替你点同意 EULA）。
 
 ## 常用命令
 

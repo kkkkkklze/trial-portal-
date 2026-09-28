@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "GbG",
+    "bNb",
+    "GbG"
+  ],
+  "key": {
+    "G": {
+      "item": "minecraft:gilded_blackstone"
+    },
+    "b": {
+      "item": "minecraft:crying_obsidian"
+    },
+    "N": {
+      "item": "minecraft:nether_star"
+    }
+  },
+  "result": {
+    "item": "trial_portal:trial_portal"
+  }
+}
