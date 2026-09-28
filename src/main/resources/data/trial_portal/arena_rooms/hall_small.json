@@ -32,5 +32,22 @@
       "pattern_block": "minecraft:cobblestone",
       "pillar_block": "minecraft:mossy_cobblestone"
     }
+  ],
+  "layouts": [
+    {
+      "name": "正对",
+      "gap": 0,
+      "lateral": 0
+    },
+    {
+      "name": "错开半边",
+      "gap": 4,
+      "lateral": 6
+    },
+    {
+      "name": "反向错开",
+      "gap": 3,
+      "lateral": -6
+    }
   ]
 }

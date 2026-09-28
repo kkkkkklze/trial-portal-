@@ -37,5 +37,17 @@
       "floor_pattern": "checker",
       "pattern_block": "minecraft:deepslate_tiles"
     }
+  ],
+  "layouts": [
+    {
+      "name": "正对",
+      "gap": 0,
+      "lateral": 0
+    },
+    {
+      "name": "绕一侧",
+      "gap": 5,
+      "lateral": -5
+    }
   ]
 }

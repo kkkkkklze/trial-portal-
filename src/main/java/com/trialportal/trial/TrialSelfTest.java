@@ -30,9 +30,12 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import org.slf4j.Logger;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 服务端启动后的自驱断言（只在 {@code -Dtrial_portal.selfTest=true} 时跑，正常游戏不会触发）。
@@ -462,6 +465,12 @@ public final class TrialSelfTest
                     probeLayoutIsSeedDriven(arenaLevel, failures);
                     // 外观变体按种子挑、花纹落地、拆场清得干净
                     probeAppearanceVariants(arenaLevel, failures);
+                    // 落点布局：横移过的房要接得住、拆得净，顺手核直走廊的退化形状
+                    probeJoggedChainWalksThrough(arenaLevel, failures);
+                    // layouts 的两条校验要有牙
+                    probeLayoutRulesRejected(failures);
+                    // 外观×落点的组合要跑满，不能被锁成固定那几对
+                    probeVariantLayoutPairing(failures);
                 }
             }
         }
@@ -974,6 +983,374 @@ public final class TrialSelfTest
         check(failures, countRoomBlocks(arenaLevel, originA, room) == 0
                         && countRoomBlocks(arenaLevel, originB, room) == 0,
                 "换外观之后拆场清不干净（变体材质留在虚空里）");
+    }
+
+    /**
+     * 落点布局（R18 ⑤）：把一间横移过的房接到上一间后面。
+     * 跑两套间隙——作者实际配的那档，和校验放行的最小那档（边界最容易让新房外墙把横移段封死）。
+     */
+    private static void probeJoggedChainWalksThrough(ServerLevel arenaLevel, List<String> failures)
+    {
+        RoomDefinition room = RoomLibrary.get("trial_portal:hall_small");
+        RoomDefinition.Layout jog = firstJoggedLayout(room);
+        if (jog == null)
+        {
+            check(failures, false, "小厅没配带 lateral 的 layouts，落点多样性的判据根本没跑");
+            return;
+        }
+        probeJoggedChain(arenaLevel, failures, room, jog.lateral, jog.gap, 16, "作者配的间隙");
+        probeJoggedChain(arenaLevel, failures, room, jog.lateral, RoomDefinition.Layout.MIN_GAP_FOR_JOG, 18,
+                "校验放行的最小间隙");
+        probeStraightLinkShape(arenaLevel, failures);
+        probeLinkLaneIsStandable(arenaLevel, failures, lateralOf(jog));
+    }
+
+    /** 与生产同一个夹取口径，别让判据跑在一个永远到不了的横移量上。 */
+    private static int lateralOf(RoomDefinition.Layout jog)
+    {
+        int limit = com.trialportal.arena.ArenaService.lateralLimit(9);
+        return Math.max(-limit, Math.min(limit, jog.lateral));
+    }
+
+    /**
+     * 走廊单独建在空隔间里的性质：铺了地板的每一格都必须站得住人。
+     * 这条专门盯"挡墙落进车道"——拐角处两段车道会互相穿过对方的墙位，先写墙就会被自己封死。
+     * 单独建而不连着房建，是因为房里的遮挡物会随机占格，混在一起就成了碰运气的断言。
+     */
+    private static void probeLinkLaneIsStandable(ServerLevel arenaLevel, List<String> failures, int lateral)
+    {
+        int cell = 19;
+        BlockPos origin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+        int zFrom = origin.getZ() + com.trialportal.arena.ArenaService.radius() + 4;
+        net.minecraft.world.phys.AABB straight = com.trialportal.arena.RoomBuilder.buildLink(arenaLevel,
+                origin.getX(), zFrom, origin.getX(), zFrom + 8, com.trialportal.arena.RoomBuilder.entryFloor(),
+                com.trialportal.arena.RoomBuilder.entryWall(), com.trialportal.arena.RoomBuilder.defaultLight(),
+                com.trialportal.arena.RoomBuilder.defaultLightSpacing());
+        net.minecraft.world.phys.AABB jogged = com.trialportal.arena.RoomBuilder.buildLink(arenaLevel,
+                origin.getX(), zFrom + 12, origin.getX() + lateral, zFrom + 20,
+                com.trialportal.arena.RoomBuilder.entryFloor(), com.trialportal.arena.RoomBuilder.entryWall(),
+                com.trialportal.arena.RoomBuilder.defaultLight(),
+                com.trialportal.arena.RoomBuilder.defaultLightSpacing());
+        check(failures, flooredCells(arenaLevel, straight) >= 3 * 10,
+                "直走廊铺出来的地板只有 " + flooredCells(arenaLevel, straight) + " 格，不像一条 3 格宽的通道");
+        check(failures, blockedLaneCells(arenaLevel, straight) == 0,
+                "直走廊有 " + blockedLaneCells(arenaLevel, straight) + " 格地板被墙挡住");
+        check(failures, blockedLaneCells(arenaLevel, jogged) == 0,
+                "折线走廊拐角有 " + blockedLaneCells(arenaLevel, jogged) + " 格地板被自己的挡墙挡住");
+        check(failures, canWalkAlong(arenaLevel, origin.getX(), zFrom + 12, origin.getX() + lateral, zFrom + 13)
+                        && canWalkAlong(arenaLevel, origin.getX() + lateral, zFrom + 13, origin.getX() + lateral,
+                        zFrom + 20),
+                "折线走廊的拐角走不通：横移段与纵向段之间断了");
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, cell, zFrom + 21 - origin.getZ(),
+                straight.minmax(jogged));
+        check(failures, flooredCells(arenaLevel, jogged) == 0 && flooredCells(arenaLevel, straight) == 0,
+                "拆场没把两条走廊的地板还回虚空");
+    }
+
+    /** 一条线上有地板的格数（用来证明走廊真的铺了东西，不是判据空转）。 */
+    private static int flooredCells(ServerLevel level, net.minecraft.world.phys.AABB area)
+    {
+        int floorY = com.trialportal.arena.ArenaService.FLOOR_Y;
+        int count = 0;
+        for (int x = (int) Math.floor(area.minX); x < (int) Math.ceil(area.maxX); x++)
+        {
+            for (int z = (int) Math.floor(area.minZ); z < (int) Math.ceil(area.maxZ); z++)
+            {
+                if (isGround(level, new BlockPos(x, floorY, z)))
+                {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    /** 走廊上两点之间走得到吗（不掺房屋，免得遮挡物把判据变成碰运气）。 */
+    private static boolean canWalkAlong(ServerLevel level, int fromX, int fromZ, int toX, int toZ)
+    {
+        int floorY = com.trialportal.arena.ArenaService.FLOOR_Y;
+        List<BlockPos> start = List.of(new BlockPos(fromX, floorY, fromZ));
+        return reachable(level, start, toX, toZ,
+                Math.min(fromX, toX) - 6, Math.max(fromX, toX) + 6,
+                Math.min(fromZ, toZ) - 6, Math.max(fromZ, toZ) + 6);
+    }
+
+    /**
+     * 洪水填充：从一批起点出发能不能踩到目标格。可走 = "脚下实心 + 上身两格空"。
+     * 范围钉在给定盒子里，不会把整张虚空图漫一遍。
+     */
+    private static boolean reachable(ServerLevel level, List<BlockPos> starts, int toX, int toZ,
+                                     int xLo, int xHi, int zLo, int zHi)
+    {
+        Set<Long> seen = new HashSet<>();
+        ArrayDeque<long[]> queue = new ArrayDeque<>();
+        for (BlockPos start : starts)
+        {
+            if (standable(level, start) && seen.add(key(start.getX(), start.getZ())))
+            {
+                queue.add(new long[] {start.getX(), start.getZ()});
+            }
+        }
+        while (!queue.isEmpty())
+        {
+            long[] here = queue.poll();
+            if (here[0] == toX && here[1] == toZ)
+            {
+                return true;
+            }
+            for (int[] step : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}})
+            {
+                int nx = (int) here[0] + step[0];
+                int nz = (int) here[1] + step[1];
+                if (nx < xLo || nx > xHi || nz < zLo || nz > zHi || !seen.add(key(nx, nz)))
+                {
+                    continue;
+                }
+                if (standable(level, new BlockPos(nx, com.trialportal.arena.ArenaService.FLOOR_Y, nz)))
+                {
+                    queue.add(new long[] {nx, nz});
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判据只有"玩家走得到"：从上一间屋里任意一格出发做洪水填充，看能不能真的踏进新房中心。
+     * 断言刻意<b>不</b>复刻走廊的画法——把实现抄进断言，实现错了断言会跟着一起绿（这条踩过三次）。
+     */
+    private static void probeJoggedChain(ServerLevel arenaLevel, List<String> failures, RoomDefinition room,
+                                         int wantLateral, int gap, int cell, String label)
+    {
+        BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+        BlockPos originA = cellOrigin.offset(-room.width() / 2, 0,
+                com.trialportal.arena.ArenaService.radius() + 4);
+        com.trialportal.arena.RoomBuilder.build(arenaLevel, room, originA,
+                net.minecraft.util.RandomSource.create(11L), room.paletteFor(11L));
+        int reachA = originA.getZ() + room.depth() - cellOrigin.getZ();
+
+        int limit = com.trialportal.arena.ArenaService.lateralLimit(room.width());
+        int lateral = Math.max(-limit, Math.min(limit, wantLateral));
+        check(failures, lateral != 0,
+                "lateral " + wantLateral + " 被横向余量夹成 0（limit=" + limit + "），这套布局永远不可能生效");
+        BlockPos originB = cellOrigin.offset(-room.width() / 2 + lateral, 0, reachA + gap);
+        net.minecraft.world.phys.AABB link = com.trialportal.arena.RoomBuilder.buildLink(arenaLevel,
+                cellOrigin.getX(), cellOrigin.getZ() + reachA, cellOrigin.getX() + lateral, originB.getZ() - 1,
+                com.trialportal.arena.RoomBuilder.entryFloor(), com.trialportal.arena.RoomBuilder.entryWall(),
+                com.trialportal.arena.RoomBuilder.defaultLight(),
+                com.trialportal.arena.RoomBuilder.defaultLightSpacing());
+        com.trialportal.arena.RoomBuilder.Built builtB = com.trialportal.arena.RoomBuilder.build(
+                arenaLevel, room, originB, net.minecraft.util.RandomSource.create(12L), room.paletteFor(12L));
+
+        int doorX = originB.getX() + room.width() / 2;
+        check(failures, canWalkFromRoom(arenaLevel, originA, room, doorX, originB.getZ() + room.depth() / 2),
+                label + "：" + gap + " 格间隙 + 横移 " + lateral + " 格，从上一间走不进新房（走廊拐角或新房外墙把它封死了）");
+        check(failures, !isGround(arenaLevel, new BlockPos(originA.getX(), com.trialportal.arena.ArenaService.FLOOR_Y,
+                        originB.getZ() + 1)),
+                label + "：新房还压在老轴线上，lateral 没真的进落点");
+        int badPoints = 0;
+        for (BlockPos point : builtB.spawnPoints())
+        {
+            if (!isGround(arenaLevel, point.below()) || !arenaLevel.getBlockState(point).isAir())
+            {
+                badPoints++;
+            }
+        }
+        check(failures, badPoints == 0, label + "：横移之后的站怪点有 " + badPoints + " 个脚下不实心或被挡");
+
+        // 拆场：横移的房 + 折线走廊都得跟着一起没，虚空里不许留桥
+        int reachB = originB.getZ() + room.depth() - cellOrigin.getZ();
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, cell, reachB,
+                link.minmax(builtB.region()));
+        int bendRow = cellOrigin.getZ() + reachA + 1;
+        int jogX = (cellOrigin.getX() + doorX) / 2;
+        check(failures, countRoomBlocks(arenaLevel, originA, room) == 0
+                        && countRoomBlocks(arenaLevel, originB, room) == 0,
+                label + "：横移过的房拆不干净");
+        check(failures, arenaLevel.getBlockState(new BlockPos(jogX, com.trialportal.arena.ArenaService.FLOOR_Y,
+                        bendRow)).isAir(),
+                label + "：折线走廊留在虚空里（拆场只按房间盒子算，没并上走廊的足迹）");
+        check(failures, !hasForcedChunkIn(arenaLevel, originA.offset(-3, 0, -3),
+                        originB.offset(room.width() + 3, 0, room.depth() + 3)),
+                label + "：横移走廊 force 过的区块拆完没还回去");
+    }
+
+    /** 走廊足迹里"有地板却站不住人"的格数——挡墙不该落在车道上，落在上面玩家就会撞墙。 */
+    private static int blockedLaneCells(ServerLevel level, net.minecraft.world.phys.AABB link)
+    {
+        int floorY = com.trialportal.arena.ArenaService.FLOOR_Y;
+        int blocked = 0;
+        for (int x = (int) Math.floor(link.minX); x < (int) Math.ceil(link.maxX); x++)
+        {
+            for (int z = (int) Math.floor(link.minZ); z < (int) Math.ceil(link.maxZ); z++)
+            {
+                BlockPos pos = new BlockPos(x, floorY, z);
+                if (isGround(level, pos) && (!level.getBlockState(pos.above(1)).isAir()
+                        || !level.getBlockState(pos.above(2)).isAir()))
+                {
+                    blocked++;
+                }
+            }
+        }
+        return blocked;
+    }
+
+    /** 库里第一套带横移的落点；没有就返回 null（让调用方把"判据没跑"报成失败）。 */
+    private static RoomDefinition.Layout firstJoggedLayout(RoomDefinition room)
+    {
+        if (room == null)
+        {
+            return null;
+        }
+        for (RoomDefinition.Layout layout : room.layouts)
+        {
+            if (layout.lateral != 0)
+            {
+                return layout;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 站在上一间屋里的任意一格，能不能走到目标格。
+     * 起点铺满整间屋是故意的——遮挡物会随机占掉门口那一格，钉死一个起点就成了碰运气的断言。
+     */
+    private static boolean canWalkFromRoom(ServerLevel level, BlockPos fromOrigin, RoomDefinition from,
+                                           int toX, int toZ)
+    {
+        int floorY = com.trialportal.arena.ArenaService.FLOOR_Y;
+        List<BlockPos> starts = new ArrayList<>();
+        for (int dx = 0; dx < from.width(); dx++)
+        {
+            for (int dz = 0; dz < from.depth(); dz++)
+            {
+                starts.add(fromOrigin.offset(dx, 0, dz));
+            }
+        }
+        return reachable(level, starts, toX, toZ,
+                Math.min(fromOrigin.getX(), toX) - 24, Math.max(fromOrigin.getX() + from.width(), toX) + 24,
+                Math.min(fromOrigin.getZ(), toZ) - 4, Math.max(fromOrigin.getZ() + from.depth(), toZ) + 4);
+    }
+
+    private static boolean standable(ServerLevel level, BlockPos floorPos)
+    {
+        return isGround(level, floorPos) && level.getBlockState(floorPos.above(1)).isAir()
+                && level.getBlockState(floorPos.above(2)).isAir();
+    }
+
+    private static long key(int x, int z)
+    {
+        return ((long) x << 32) ^ (z & 0xFFFFFFFFL);
+    }
+
+    /**
+     * {@code xFrom == xTo} 时折线必须退化成原来那条直走廊：3 格宽车道 + 两侧各一道挡墙。
+     * 这条是"重写走廊原语没把老形状改掉"的对账，横移布局上线以后老路径还在，所以它得有牙。
+     */
+    private static void probeStraightLinkShape(ServerLevel arenaLevel, List<String> failures)
+    {
+        int cell = 17;
+        BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+        int zFrom = cellOrigin.getZ() + com.trialportal.arena.ArenaService.radius() + 4;
+        com.trialportal.arena.RoomBuilder.buildLink(arenaLevel, cellOrigin.getX(), zFrom,
+                cellOrigin.getX(), zFrom + 6, com.trialportal.arena.RoomBuilder.entryFloor(),
+                com.trialportal.arena.RoomBuilder.entryWall(), com.trialportal.arena.RoomBuilder.defaultLight(),
+                com.trialportal.arena.RoomBuilder.defaultLightSpacing());
+        int mid = zFrom + 3;
+        int laneBad = 0;
+        int railBad = 0;
+        for (int dx = -2; dx <= 2; dx++)
+        {
+            BlockPos pos = new BlockPos(cellOrigin.getX() + dx, com.trialportal.arena.ArenaService.FLOOR_Y, mid);
+            boolean lane = Math.abs(dx) <= 1;
+            boolean solid = isGround(arenaLevel, pos);
+            boolean blockedAbove = !arenaLevel.getBlockState(pos.above(2)).isAir();
+            if (lane)
+            {
+                // 中间三格该是"有地板、头顶通空"
+                if (!solid || blockedAbove)
+                {
+                    laneBad++;
+                }
+            }
+            else if (solid || !blockedAbove)
+            {
+                // 两侧两格该是"没地板、半空一道墙"
+                railBad++;
+            }
+        }
+        check(failures, laneBad == 0, "直走廊的车道不再是 3 格通空（" + laneBad + " 格不对）");
+        check(failures, railBad == 0, "直走廊两侧的挡墙不见了（" + railBad + " 格不对），玩家会从走廊边走进虚空");
+        com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, cell,
+                mid + 4 - cellOrigin.getZ());
+    }
+
+    /** layouts 的两条校验：横移没留间隙会被新房墙封死；整份列表都是直行就是没配。 */
+    private static void probeLayoutRulesRejected(List<String> failures)
+    {
+        String jogWithoutGap = layoutRoom(0, 6).resolve("trial_portal:probe_jog_gap");
+        check(failures, jogWithoutGap != null,
+                "lateral 非 0 而 gap=0 的布局没被拦：走廊横移段会压在新房外墙底下被封死");
+        String gapTooBig = layoutRoom(40, 4).resolve("trial_portal:probe_jog_range");
+        check(failures, gapTooBig != null, "gap 超过上限没被拦（进深会无限长，强制加载跟着涨）");
+        RoomDefinition inert = new RoomDefinition();
+        inert.size = List.of(9, 5, 9);
+        inert.layouts.add(layout(0, 0));
+        inert.layouts.add(layout(0, 0));
+        String allStraight = inert.resolve("trial_portal:probe_jog_inert");
+        check(failures, allStraight != null,
+                "layouts 全是直行却没人报错（多半是键名拼错了，配了等于没配）");
+        String sane = layoutRoom(4, 6).resolve("trial_portal:probe_jog_sane");
+        check(failures, sane == null, "合法的 layouts 被误判：" + sane);
+    }
+
+    private static RoomDefinition layoutRoom(int gap, int lateral)
+    {
+        RoomDefinition room = new RoomDefinition();
+        room.size = List.of(9, 5, 9);
+        room.layouts.add(layout(gap, lateral));
+        return room;
+    }
+
+    private static RoomDefinition.Layout layout(int gap, int lateral)
+    {
+        RoomDefinition.Layout layout = new RoomDefinition.Layout();
+        layout.gap = gap;
+        layout.lateral = lateral;
+        return layout;
+    }
+
+    /**
+     * 外观与落点是两条独立的选择：都取种子最低位、列表长度又一样时，两者会永远锁成同一对，
+     * 组合数直接砍一半（"苔石厅"必定走吊桥）。这条逐间房钉住"组合要跑满"。
+     * 只查一间房是不够的：2×3 那间即便两条流同源，靠互质也能凑满 6 种——真正会露馅的是 2×2。
+     */
+    private static void probeVariantLayoutPairing(List<String> failures)
+    {
+        int checked = 0;
+        for (RoomDefinition room : RoomLibrary.snapshot().values())
+        {
+            if (room.variants.size() < 2 || room.layouts.size() < 2)
+            {
+                continue;
+            }
+            checked++;
+            Set<String> pairs = new HashSet<>();
+            for (int i = 0; i < 96; i++)
+            {
+                long seed = i * 31L + 7L; // 与 TrialManager 的 layoutSeed 同一种步长
+                RoomDefinition.Palette palette = room.paletteFor(seed);
+                RoomDefinition.Layout layout = room.layoutFor(seed);
+                pairs.add(palette.floor + "+" + palette.wall + "/" + layout.gap + "/" + layout.lateral);
+            }
+            int full = room.variants.size() * room.layouts.size();
+            check(failures, pairs.size() >= full,
+                    room.id() + " 的外观×落点只跑出 " + pairs.size() + " 种组合，全组合应有 " + full
+                            + " 种：两条列表取了同一段比特，配对被锁死");
+        }
+        check(failures, checked >= 4,
+                "只有 " + checked + " 间房同时配了 variants 与 layouts，组合数判据覆盖面不足");
     }
 
     /**

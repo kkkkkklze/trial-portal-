@@ -34,5 +34,17 @@
       "ceiling_block": "minecraft:blackstone",
       "pillar_block": "minecraft:polished_blackstone"
     }
+  ],
+  "layouts": [
+    {
+      "name": "长桥直入",
+      "gap": 10,
+      "lateral": 0
+    },
+    {
+      "name": "门前一顿",
+      "gap": 16,
+      "lateral": 1
+    }
   ]
 }

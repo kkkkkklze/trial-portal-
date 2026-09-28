@@ -695,6 +695,15 @@ public final class ArenaService
         return Math.max(radius() + 2, (RoomLibrary.maxWidth() + 3) / 2);
     }
 
+    /**
+     * 横移布局的上限（格）。房间连同外墙必须留在隔间的横向声明盒里，否则"别跑出场地"判定
+     * 与拆场看到的盒子盖不住真正建出来的地方——声明的盒子与实际足迹不许各算一次。
+     */
+    public static int lateralLimit(int roomWidth)
+    {
+        return Math.max(0, cellHalfFootprint() - (roomWidth + 3) / 2);
+    }
+
     /** 平台会跨区块，先把覆盖范围强制加载，否则 setBlock 只能铺到已加载的部分。 */
     private static void forceChunks(ServerLevel level, BlockPos origin)
     {

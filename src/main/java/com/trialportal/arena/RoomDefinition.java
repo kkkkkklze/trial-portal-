@@ -64,6 +64,14 @@ public class RoomDefinition
     @SerializedName("ceiling_block")
     public String ceilingBlock = "";
 
+    /**
+     * 布局变体：同一间房换它在链条里的<b>落点</b>——离上一间多远、往旁边错开多少。
+     * 外观变体换的是材质，这里换的是走动时的空间感（一排正对着推过去的房 vs 折来折去的桥）。
+     * 第一间房永远用不上它们：大厅那一侧的门洞与围栏缺口是对着中轴线留的，横移会把玩家引进虚空。
+     */
+    @SerializedName("layouts")
+    public List<Layout> layouts = new ArrayList<>();
+
     /** 柱子对数（沿中轴线对称），0 = 不立柱。 */
     @SerializedName("pillars")
     public int pillars;
@@ -203,6 +211,18 @@ public class RoomDefinition
             {
                 return variantError;
             }
+        }
+        for (Layout layout : this.layouts)
+        {
+            String layoutError = layout.resolve(id);
+            if (layoutError != null)
+            {
+                return layoutError;
+            }
+        }
+        if (layoutsAreInert())
+        {
+            return "layouts 里每一套的 gap 与 lateral 都是 0：列了等于没列（检查是不是把键名拼错了）";
         }
         if (this.pillars < 0 || this.pillars * 4 >= Math.min(w, d))
         {
@@ -366,12 +386,101 @@ public class RoomDefinition
         {
             return mergedPalette(null);
         }
-        int index = (int) Math.floorMod(seed, this.variants.size());
-        return mergedPalette(this.variants.get(index));
+        return mergedPalette(this.variants.get(indexFor(seed, PALETTE_SHIFT, this.variants.size())));
     }
+
+    /**
+     * 按种子挑一种落点。必须取种子的<b>另一段比特</b>：两条列表都取最低位、长度又一样时，
+     * 外观和落点会永远配成固定那几对（"苔石厅"必定横移），四组合只出两组合，多样性直接减半。
+     */
+    public Layout layoutFor(long seed)
+    {
+        if (this.layouts == null || this.layouts.isEmpty())
+        {
+            return Layout.straight();
+        }
+        return this.layouts.get(indexFor(seed, LAYOUT_SHIFT, this.layouts.size()));
+    }
+
+    private static int indexFor(long seed, int shift, int size)
+    {
+        return (int) Math.floorMod(Math.floorDiv(seed, 1L << shift), size);
+    }
+
+    private static final int PALETTE_SHIFT = 0;
+    private static final int LAYOUT_SHIFT = 1;
 
     private static String pick(@Nullable String override, String fallback)
     {
         return override != null && !override.isBlank() ? override : fallback;
+    }
+
+    /**
+     * 一间房在链条里怎么落：与上一间隔多远（{@code gap}，中间是悬空的走廊）、往旁边错开几格
+     * （{@code lateral}，走廊就地拐弯过去）。两者都是 0 就是老样子——正对着一间推过去。
+     */
+    public static class Layout
+    {
+        @SerializedName("name")
+        public String name;
+
+        /** 与上一间房之间的虚空宽度（格）。0 = 墙贴墙，和以前一样。 */
+        @SerializedName("gap")
+        public int gap;
+
+        /** 整间房沿 X 轴横移（格），可负。运行时还会按隔间横向余量收紧，横不出去。 */
+        @SerializedName("lateral")
+        public int lateral;
+
+        public static Layout straight()
+        {
+            Layout straight = new Layout();
+            straight.name = "直行";
+            return straight;
+        }
+
+        @Nullable
+        String resolve(String roomId)
+        {
+            String where = "房间 " + roomId + " 的布局";
+            if (this.gap < 0 || this.gap > MAX_GAP)
+            {
+                return where + " 的 gap 要在 0~" + MAX_GAP + " 之间（当前 " + this.gap + "）";
+            }
+            if (this.lateral < -MAX_LATERAL || this.lateral > MAX_LATERAL)
+            {
+                return where + " 的 lateral 要在 ±" + MAX_LATERAL + " 之间（当前 " + this.lateral + "）";
+            }
+            if (this.lateral != 0 && this.gap < MIN_GAP_FOR_JOG)
+            {
+                return where + " 横移 " + this.lateral + " 格却只留 " + this.gap
+                        + " 格间隙：走廊的横移段会压在新房外墙底下，被墙封死。lateral 非 0 时 gap 至少 "
+                        + MIN_GAP_FOR_JOG;
+            }
+            return null;
+        }
+
+        private static final int MAX_GAP = 16;
+        private static final int MAX_LATERAL = 16;
+
+        /** 横移必须留出的最小间隙：走廊的横移段要走在两间房之间，贴着墙行就会被新房外墙封死。 */
+        public static final int MIN_GAP_FOR_JOG = 2;
+    }
+
+    /** 整份列表都是直行 = 一行没配（多半是把 lateral 拼错了），与其静默按老样子铺不如直接红。 */
+    public boolean layoutsAreInert()
+    {
+        if (this.layouts == null || this.layouts.isEmpty())
+        {
+            return false;
+        }
+        for (Layout layout : this.layouts)
+        {
+            if (layout.gap != 0 || layout.lateral != 0)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 }

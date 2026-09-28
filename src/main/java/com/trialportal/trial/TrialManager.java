@@ -918,19 +918,25 @@ public class TrialManager extends SavedData
             return;
         }
         session.roomIndex++;
+        long layoutSeed = session.seed + session.waveIndex * 31L; // 每波布局不同，但同一场可复现
         int cellRadius = ArenaService.radius();
         int cursor = session.reach > 0 ? session.reach : cellRadius + 2;
-        BlockPos origin = new BlockPos(session.origin.getX() - room.width() / 2, ArenaService.FLOOR_Y,
-                session.origin.getZ() + cursor);
+        // 第一间房永远正对着大厅：台沿那侧的围栏缺口是按隔间中轴线留的，横移会把玩家一脚踏进虚空，
+        // 而且这一段本来就没有走廊可拐。落点多样性从第二间开始起作用。
+        RoomDefinition.Layout layout = session.reach > 0 ? room.layoutFor(layoutSeed) : RoomDefinition.Layout.straight();
+        int limit = ArenaService.lateralLimit(room.width());
+        int lateral = Math.max(-limit, Math.min(limit, layout.lateral));
+        BlockPos origin = new BlockPos(session.origin.getX() - room.width() / 2 + lateral, ArenaService.FLOOR_Y,
+                session.origin.getZ() + cursor + layout.gap);
         if (session.reach > 0)
         {
-            AABB corridor = RoomBuilder.buildCorridor(level, session.origin.getX(),
-                    session.origin.getZ() + session.reach, origin.getZ() - 1,
+            AABB corridor = RoomBuilder.buildLink(level, session.linkX,
+                    session.origin.getZ() + session.reach, session.origin.getX() + lateral, origin.getZ() - 1,
                     RoomBuilder.entryFloor(), RoomBuilder.entryWall(),
                     RoomBuilder.defaultLight(), RoomBuilder.defaultLightSpacing());
             session.region = session.region == null ? corridor : join(session.region, corridor);
         }
-        long layoutSeed = session.seed + session.waveIndex * 31L; // 每波布局不同，但同一场可复现
+        session.linkX = session.origin.getX() + lateral;
         RoomBuilder.Built built = RoomBuilder.build(level, room, origin,
                 RandomSource.create(layoutSeed), room.paletteFor(layoutSeed));
         session.spawnPoints = built.spawnPoints();
@@ -938,9 +944,10 @@ public class TrialManager extends SavedData
         session.region = session.region == null ? built.region() : join(session.region, built.region());
         session.reach = origin.getZ() + room.depth() - session.origin.getZ();
         recordBuilt(player.getUUID(), session.reach, session.region);
-        LOGGER.info("[trial_portal] 第 {} 波建房 {} @ {} 室内 {}x{}x{} 站怪点 {} 个 进深 {}",
+        LOGGER.info("[trial_portal] 第 {} 波建房 {} @ {} 室内 {}x{}x{} 站怪点 {} 个 进深 {} 横移 {} 间隙 {}",
                 session.waveNumber(), room.id(), origin.toShortString(),
-                room.width(), room.height(), room.depth(), built.spawnPoints().size(), session.reach);
+                room.width(), room.height(), room.depth(), built.spawnPoints().size(), session.reach,
+                lateral, layout.gap);
         TrialFeedback.chat(player, "往里进一间：" + room.displayNameOrDefault());
     }
 

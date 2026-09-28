@@ -30,5 +30,17 @@
       "ceiling_block": "minecraft:stone_bricks",
       "pillar_block": "minecraft:mossy_cobblestone"
     }
+  ],
+  "layouts": [
+    {
+      "name": "长道直入",
+      "gap": 8,
+      "lateral": 0
+    },
+    {
+      "name": "侧面引进",
+      "gap": 5,
+      "lateral": 4
+    }
   ]
 }

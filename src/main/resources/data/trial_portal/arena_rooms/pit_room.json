@@ -30,5 +30,17 @@
       "wall": "minecraft:deepslate",
       "ceiling_block": "minecraft:blackstone"
     }
+  ],
+  "layouts": [
+    {
+      "name": "正对",
+      "gap": 0,
+      "lateral": 0
+    },
+    {
+      "name": "吊桥",
+      "gap": 7,
+      "lateral": -4
+    }
   ]
 }

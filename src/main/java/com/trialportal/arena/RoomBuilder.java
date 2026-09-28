@@ -14,7 +14,9 @@ import net.minecraftforge.registries.ForgeRegistries;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 按 {@link RoomDefinition} 把一间房落到场地里：地板、外墙（留门洞）、可选立柱与遮挡物。
@@ -151,46 +153,91 @@ public final class RoomBuilder
     }
 
     /**
-     * 两间房之间的走廊：3 格宽地板 + 两侧墙（y 层与平台同高），玩家能从上一间走进下一间。
+     * 把上一段的末端接到下一间房的门洞：沿 Z 接到拐行 → 沿 X 横移 → 沿 Z 笔直穿到门口。
+     * {@code xFrom == xTo} 时中段不成立，折线退化成原来那条直走廊，落格与旧实现一致。
+     * <p>
+     * 分两遍落笔是有原因的：拐角处两段车道会互相穿过对方的挡墙位。先写墙再写车道就会被自己封死
+     * （玩家走进走廊撞墙），所以先把全车道算成一个集合，铺完地板与净空，最后补墙时跳过落在车道里的格。
      *
      * @return 这条走廊真实写过的区域（拆场按它算）
      */
-    public static AABB buildCorridor(ServerLevel level, int centerX, int zFrom, int zTo,
-                                     BlockState floor, BlockState wall, @Nullable BlockState light, int spacing)
+    public static AABB buildLink(ServerLevel level, int xFrom, int zFrom, int xTo, int zTo,
+                                 BlockState floor, BlockState wall, @Nullable BlockState light, int spacing)
     {
         int z0 = Math.min(zFrom, zTo) - 1;
         int z1 = Math.max(zFrom, zTo) + 1;
-        forceRange(level, centerX - DOOR_HALF_WIDTH - 1, centerX + DOOR_HALF_WIDTH + 1, z0, z1);
+        int x0 = Math.min(xFrom, xTo) - DOOR_HALF_WIDTH - 1;
+        int x1 = Math.max(xFrom, xTo) + DOOR_HALF_WIDTH + 1;
+        forceRange(level, x0, x1, z0, z1);
         Brush brush = new Brush(level);
-        for (int dz = z0; dz <= z1; dz++)
+
+        Set<BlockPos> lane = new LinkedHashSet<>();
+        List<Rail> rails = new ArrayList<>();
+        // 横移放在"越过上一间那道墙之后的第一行"：贴着墙行拐弯会把横移段的挡墙落进上一间的屋里。
+        int bend = xFrom == xTo ? zFrom : zFrom + 1;
+        appendRun(lane, rails, xFrom, z0, xFrom, bend);
+        if (xFrom != xTo)
         {
-            for (int dx = -DOOR_HALF_WIDTH - 1; dx <= DOOR_HALF_WIDTH + 1; dx++)
+            appendRun(lane, rails, xFrom, bend, xTo, bend);
+        }
+        appendRun(lane, rails, xTo, bend, xTo, z1);
+
+        for (BlockPos cell : lane)
+        {
+            brush.put(cell, floor);
+            for (int dy = 1; dy <= DOOR_HEIGHT; dy++)
             {
-                boolean edge = Math.abs(dx) == DOOR_HALF_WIDTH + 1;
-                BlockPos pos = new BlockPos(centerX + dx, ArenaService.FLOOR_Y, dz);
-                if (!edge)
+                BlockPos above = cell.above(dy);
+                if (!level.getBlockState(above).isAir())
                 {
-                    brush.put(pos, floor);
+                    brush.put(above, Blocks.AIR.defaultBlockState());
                 }
-                for (int dy = 1; dy <= DOOR_HEIGHT; dy++)
-                {
-                    BlockPos wallPos = pos.above(dy);
-                    if (edge)
-                    {
-                        boolean lamp = light != null && dy == 2 && spacing > 0 && dz % spacing == 0;
-                        brush.put(wallPos, lamp ? light : wall);
-                    }
-                    else if (!level.getBlockState(wallPos).isAir())
-                    {
-                        brush.put(wallPos, Blocks.AIR.defaultBlockState());
-                    }
-                }
+            }
+        }
+        for (Rail rail : rails)
+        {
+            if (lane.contains(rail.pos()))
+            {
+                continue;
+            }
+            for (int dy = 1; dy <= DOOR_HEIGHT; dy++)
+            {
+                // 灯沿"走的那个轴"排布，与旧直走廊的 dz % spacing 同一条规则
+                boolean lamp = light != null && dy == 2 && spacing > 0 && rail.along() % spacing == 0;
+                brush.put(rail.pos().above(dy), lamp ? light : wall);
             }
         }
         AABB region = brush.region();
         forceRegion(level, region);
-        return region == null ? new AABB(centerX - DOOR_HALF_WIDTH - 1, ArenaService.FLOOR_Y, z0,
-                centerX + DOOR_HALF_WIDTH + 2, ArenaService.FLOOR_Y + 1D, z1 + 1D) : region;
+        return region == null ? new AABB(x0, ArenaService.FLOOR_Y, z0, x1 + 1D,
+                ArenaService.FLOOR_Y + 1D, z1 + 1D) : region;
+    }
+
+    /** 挡墙格 + 它在行走轴上的坐标（灯的排布按这个坐标取模）。 */
+    private record Rail(BlockPos pos, int along) {}
+
+    /** 走廊的一段：沿轴铺 3 格宽车道，两侧各一道挡墙。轴由两个端点自己决定（只可能沿 X 或沿 Z）。 */
+    private static void appendRun(Set<BlockPos> lane, List<Rail> rails, int xFrom, int zFrom, int xTo, int zTo)
+    {
+        boolean alongX = xFrom != xTo;
+        int span = alongX ? xTo - xFrom : zTo - zFrom;
+        int steps = Math.abs(span);
+        int unit = Integer.compare(span, 0);
+        for (int i = 0; i <= steps; i++)
+        {
+            int along = (alongX ? xFrom : zFrom) + unit * i;
+            int fixed = alongX ? zFrom : xFrom;
+            for (int side = -DOOR_HALF_WIDTH; side <= DOOR_HALF_WIDTH; side++)
+            {
+                lane.add(alongX ? new BlockPos(along, ArenaService.FLOOR_Y, fixed + side)
+                        : new BlockPos(fixed + side, ArenaService.FLOOR_Y, along));
+            }
+            int guard = DOOR_HALF_WIDTH + 1;
+            rails.add(alongX ? new Rail(new BlockPos(along, ArenaService.FLOOR_Y, fixed - guard), along)
+                    : new Rail(new BlockPos(fixed - guard, ArenaService.FLOOR_Y, along), along));
+            rails.add(alongX ? new Rail(new BlockPos(along, ArenaService.FLOOR_Y, fixed + guard), along)
+                    : new Rail(new BlockPos(fixed + guard, ArenaService.FLOOR_Y, along), along));
+        }
     }
 
     private static boolean containsBlock(List<BlockPos> points, BlockPos pos)

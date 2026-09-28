@@ -63,6 +63,11 @@ public class TrialSession
     public net.minecraft.world.phys.AABB region;
     /** 沿 +Z 方向已建的进深（相对隔间原点），拆场与强制加载范围都按它算。 */
     public int reach;
+    /**
+     * 上一段走廊末端所在的 X（绝对坐标）。房间可以按布局横移，横移段要从这个 X 拐过去，
+     * 所以下一间房的走廊必须从它起笔，不能假设永远在隔间中轴线上。
+     */
+    public int linkX;
 
     /** 资源副本 ID（只有 CHALLENGE 玩法有值）。 */
     @Nullable
@@ -98,6 +103,7 @@ public class TrialSession
         this.definitionId = definitionId;
         this.dimension = dimension;
         this.origin = origin.immutable();
+        this.linkX = origin.getX();
     }
 
     /** 当前是第几波（1 起）。 */
