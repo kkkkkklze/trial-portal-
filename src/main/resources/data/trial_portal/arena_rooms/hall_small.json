@@ -49,5 +49,21 @@
       "gap": 3,
       "lateral": -6
     }
+  ],
+  "partitions": [
+    {
+      "name": "中岛",
+      "from": [4, 3],
+      "to": [4, 5],
+      "block": "minecraft:polished_blackstone_wall",
+      "height": 2
+    },
+    {
+      "name": "低半墙",
+      "from": [6, 2],
+      "to": [6, 6],
+      "block": "minecraft:blackstone_wall",
+      "height": 1
+    }
   ]
 }

@@ -471,6 +471,9 @@ public final class TrialSelfTest
                     probeLayoutRulesRejected(failures);
                     // 外观×落点的组合要跑满，不能被锁成固定那几对
                     probeVariantLayoutPairing(failures);
+                    // 房内隔断：砌得出来、封不死房间、拆得干净
+                    probePartitions(arenaLevel, failures);
+                    probePartitionRulesRejected(failures);
                 }
             }
         }
@@ -1082,6 +1085,13 @@ public final class TrialSelfTest
     private static boolean reachable(ServerLevel level, List<BlockPos> starts, int toX, int toZ,
                                      int xLo, int xHi, int zLo, int zHi)
     {
+        return floodFill(level, starts, xLo, xHi, zLo, zHi).contains(key(toX, toZ));
+    }
+
+    /** 从一批起点做洪水填充，返回走得到的所有格。可走 = "脚下实心 + 上身两格空"。 */
+    private static Set<Long> floodFill(ServerLevel level, List<BlockPos> starts,
+                                       int xLo, int xHi, int zLo, int zHi)
+    {
         Set<Long> seen = new HashSet<>();
         ArrayDeque<long[]> queue = new ArrayDeque<>();
         for (BlockPos start : starts)
@@ -1094,10 +1104,6 @@ public final class TrialSelfTest
         while (!queue.isEmpty())
         {
             long[] here = queue.poll();
-            if (here[0] == toX && here[1] == toZ)
-            {
-                return true;
-            }
             for (int[] step : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}})
             {
                 int nx = (int) here[0] + step[0];
@@ -1112,7 +1118,141 @@ public final class TrialSelfTest
                 }
             }
         }
-        return false;
+        return seen;
+    }
+
+    /**
+     * 房内隔断（㉕）最要紧的一条判据：<b>房里每一格能站人的地方，都必须从门洞走得到</b>。
+     * 封出不通的小间就意味着怪卡在里面、玩家永远打不到，波次清不完——这一格是不是隔断压出来的小间，
+     * 用一次从门洞出发的填充就能数出来，不需要知道隔断怎么画的（不复刻画法，见上面的教训）。
+     */
+    private static int sealedStandableCells(ServerLevel level, BlockPos origin, RoomDefinition room)
+    {
+        int doorX = origin.getX() + room.width() / 2;
+        int doorZ = origin.getZ() - 1;
+        List<BlockPos> fromDoor = List.of(new BlockPos(doorX, com.trialportal.arena.ArenaService.FLOOR_Y, doorZ));
+        Set<Long> reached = floodFill(level, fromDoor, origin.getX() - 1, origin.getX() + room.width(),
+                doorZ, origin.getZ() + room.depth());
+        int sealed = 0;
+        for (int dx = 0; dx < room.width(); dx++)
+        {
+            for (int dz = 0; dz < room.depth(); dz++)
+            {
+                BlockPos cell = origin.offset(dx, 0, dz);
+                if (standable(level, cell) && !reached.contains(key(cell.getX(), cell.getZ())))
+                {
+                    sealed++;
+                }
+            }
+        }
+        return sealed;
+    }
+
+    /** 逐间隔断房：隔断真的砌出来了、房里没有封死的小间、拆场也把它们一起带走。 */
+    private static void probePartitions(ServerLevel arenaLevel, List<String> failures)
+    {
+        int withPartitions = 0;
+        int cell = 20;
+        for (RoomDefinition room : RoomLibrary.snapshot().values())
+        {
+            if (room.partitions.isEmpty())
+            {
+                continue;
+            }
+            withPartitions++;
+            BlockPos cellOrigin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+            BlockPos origin = cellOrigin.offset(-room.width() / 2, 0,
+                    com.trialportal.arena.ArenaService.radius() + 4);
+            com.trialportal.arena.RoomBuilder.Built built = com.trialportal.arena.RoomBuilder.build(
+                    arenaLevel, room, origin, net.minecraft.util.RandomSource.create(cell * 7L),
+                    room.paletteFor(cell));
+            int missing = 0;
+            for (RoomDefinition.Partition partition : room.partitions)
+            {
+                net.minecraft.resources.ResourceLocation id = net.minecraft.resources.ResourceLocation
+                        .tryParse(partition.block);
+                net.minecraft.world.level.block.Block expected = id == null ? null
+                        : net.minecraftforge.registries.ForgeRegistries.BLOCKS.getValue(id);
+                List<int[]> cells = partition.cells();
+                BlockPos foot = origin.offset(cells.get(0)[0], 1, cells.get(0)[1]);
+                if (expected == null || !arenaLevel.getBlockState(foot).is(expected))
+                {
+                    missing++;
+                }
+            }
+            check(failures, missing == 0, room.id() + " 有 " + missing + " 道隔断没砌出来（或材质不对）");
+            int sealed = sealedStandableCells(arenaLevel, origin, room);
+            check(failures, sealed == 0, room.id() + " 的隔断在房里封出了 " + sealed
+                    + " 格能站人却走不到的地方：怪卡在里面就打不到，波次永远清不完");
+            int badPoints = 0;
+            for (BlockPos point : built.spawnPoints())
+            {
+                if (!standable(arenaLevel, point.below()))
+                {
+                    badPoints++;
+                }
+            }
+            check(failures, badPoints == 0, room.id() + " 有 " + badPoints + " 个站怪点被隔断或遮挡物占住");
+            com.trialportal.arena.ArenaService.releaseCellAt(arenaLevel, cell,
+                    origin.getZ() + room.depth() - cellOrigin.getZ(), built.region());
+            check(failures, countRoomBlocks(arenaLevel, origin, room) == 0,
+                    room.id() + " 拆场后仍有残留（隔断没进笔刷记的足迹）");
+            cell++;
+        }
+        check(failures, withPartitions >= 3,
+                "只有 " + withPartitions + " 间房配了 partitions，隔断判据覆盖面不足");
+    }
+
+    /** partitions 的五条校验都要有牙。 */
+    private static void probePartitionRulesRejected(List<String> failures)
+    {
+        // 9x5x9、spawn_points=1 的小房：唯一的站怪点固定落在局部 (1,1)
+        String onSpawnPoint = partitionRoom(1, 1, 1, 3, 1).resolve("trial_portal:probe_p_spawn");
+        check(failures, onSpawnPoint != null, "隔断压住站怪点没被拦（怪会卡进墙里）");
+        String diagonal = partitionRoom(3, 2, 6, 6, 1).resolve("trial_portal:probe_p_diag");
+        check(failures, diagonal != null, "斜着的隔断没被拦（斜线铺出来是断格的）");
+        String outside = partitionRoom(0, 1, 0, 7, 1).resolve("trial_portal:probe_p_outside");
+        check(failures, outside != null, "越出室内的隔断没被拦（贴外墙写等于改外墙）");
+        String tooTall = partitionRoom(6, 3, 6, 7, 99).resolve("trial_portal:probe_p_tall");
+        check(failures, tooTall != null, "height 超过室内高没被拦");
+        String onAnchor = bossPartitionRoom().resolve("trial_portal:probe_p_anchor");
+        check(failures, onAnchor != null, "BOSS 房的隔断压住中心舞台没被拦（BOSS 会嵌在墙里）");
+        String sane = partitionRoom(6, 3, 6, 7, 2).resolve("trial_portal:probe_p_sane");
+        check(failures, sane == null, "合法隔断被误判：" + sane);
+    }
+
+    /** 一间 9x5x9 的探针房，里面只有一道竖向隔断 (x0,z0)-(x1,z1)。 */
+    private static RoomDefinition partitionRoom(int x0, int z0, int x1, int z1, int height)
+    {
+        RoomDefinition room = new RoomDefinition();
+        room.size = List.of(9, 5, 9);
+        room.spawnPoints = 1;
+        room.mobCap = 8;
+        room.partitions.add(barrier(x0, z0, x1, z1, height));
+        return room;
+    }
+
+    private static RoomDefinition.Partition barrier(int x0, int z0, int x1, int z1, int height)
+    {
+        RoomDefinition.Partition partition = new RoomDefinition.Partition();
+        partition.name = "探针隔断";
+        partition.from = List.of(x0, z0);
+        partition.to = List.of(x1, z1);
+        partition.height = height;
+        partition.block = "minecraft:blackstone_wall";
+        return partition;
+    }
+
+    /** BOSS 房探针：隔断横跨中心舞台 (9,9)。 */
+    private static RoomDefinition bossPartitionRoom()
+    {
+        RoomDefinition room = new RoomDefinition();
+        room.size = List.of(19, 8, 19);
+        room.spawnPoints = 2;
+        room.mobCap = 6;
+        room.bossRoom = true;
+        room.partitions.add(barrier(9, 7, 9, 11, 2));
+        return room;
     }
 
     /**
@@ -1366,11 +1506,16 @@ public final class TrialSelfTest
             List<String> candidates = new ArrayList<>();
             candidates.add(room.floor);
             candidates.add(room.wall);
+            candidates.add(room.ceilingBlock);
             candidates.add(room.pillarBlock);
             candidates.add(room.lightBlock);
             for (RoomDefinition.CoverEntry cover : room.cover)
             {
                 candidates.add(cover.block);
+            }
+            for (RoomDefinition.Partition partition : room.partitions)
+            {
+                candidates.add(partition.block);
             }
             for (RoomDefinition.Palette variant : room.variants)
             {

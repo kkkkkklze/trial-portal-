@@ -42,5 +42,21 @@
       "gap": 5,
       "lateral": 4
     }
+  ],
+  "partitions": [
+    {
+      "name": "十字竖臂",
+      "from": [6, 3],
+      "to": [6, 9],
+      "block": "minecraft:polished_blackstone_wall",
+      "height": 2
+    },
+    {
+      "name": "十字横臂",
+      "from": [3, 6],
+      "to": [9, 6],
+      "block": "minecraft:polished_blackstone_wall",
+      "height": 2
+    }
   ]
 }

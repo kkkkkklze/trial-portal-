@@ -131,6 +131,21 @@ public final class RoomBuilder
                 brush.put(pos, cover);
             }
         }
+        // 房内隔断：作者画的几何要赢过随机撒的遮挡物，所以放在遮挡物之后落笔。
+        // 压住站怪点/中心舞台这类冲突在数据校验阶段就红了，这里不再"跳过那一格"——
+        // 跳过会在隔断上留洞，作者配的东西和玩家看到的就不是一回事。
+        for (RoomDefinition.Partition partition : room.partitions)
+        {
+            BlockState barrier = blockState(partition.block, Blocks.BLACKSTONE_WALL);
+            int top = Math.min(partition.height, h);
+            for (int[] cell : partition.cells())
+            {
+                for (int dy = 1; dy <= top; dy++)
+                {
+                    brush.put(origin.offset(cell[0], dy, cell[1]), barrier);
+                }
+            }
+        }
         AABB region = brush.region();
         if (region == null)
         {

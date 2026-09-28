@@ -49,5 +49,21 @@
       "gap": 5,
       "lateral": -5
     }
+  ],
+  "partitions": [
+    {
+      "name": "主货架",
+      "from": [5, 2],
+      "to": [5, 8],
+      "block": "minecraft:blackstone_wall",
+      "height": 2
+    },
+    {
+      "name": "矮栏",
+      "from": [7, 6],
+      "to": [9, 6],
+      "block": "minecraft:iron_bars",
+      "height": 1
+    }
   ]
 }

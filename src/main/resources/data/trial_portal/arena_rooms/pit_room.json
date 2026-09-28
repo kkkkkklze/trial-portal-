@@ -42,5 +42,35 @@
       "gap": 7,
       "lateral": -4
     }
+  ],
+  "partitions": [
+    {
+      "name": "围栏北",
+      "from": [5, 4],
+      "to": [8, 4],
+      "block": "minecraft:blackstone_wall",
+      "height": 2
+    },
+    {
+      "name": "围栏南",
+      "from": [5, 8],
+      "to": [8, 8],
+      "block": "minecraft:blackstone_wall",
+      "height": 2
+    },
+    {
+      "name": "围栏东",
+      "from": [8, 4],
+      "to": [8, 8],
+      "block": "minecraft:blackstone_wall",
+      "height": 2
+    },
+    {
+      "name": "围栏西留口",
+      "from": [5, 4],
+      "to": [5, 6],
+      "block": "minecraft:blackstone_wall",
+      "height": 2
+    }
   ]
 }

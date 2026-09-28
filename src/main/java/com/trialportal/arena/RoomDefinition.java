@@ -72,6 +72,15 @@ public class RoomDefinition
     @SerializedName("layouts")
     public List<Layout> layouts = new ArrayList<>();
 
+    /**
+     * 房内隔断：沿一条轴对齐的线段砌一道墙，把空盒子切成有遮挡、有拐角的空间。
+     * 坐标是室内局部格（{@code dx}/{@code dz} 各自 1~尺寸-2），不许压住站怪点或 BOSS 站位，
+     * 也不许把房内封出不通的小间——怪卡进墙里、玩家打不到那一格，波次就永远清不完。
+     * 这些是<b>校验</b>而不是运行期悄悄跳过：跳过会在隔断上留洞，作者看到的东西和玩家看到的不一样。
+     */
+    @SerializedName("partitions")
+    public List<Partition> partitions = new ArrayList<>();
+
     /** 柱子对数（沿中轴线对称），0 = 不立柱。 */
     @SerializedName("pillars")
     public int pillars;
@@ -224,6 +233,19 @@ public class RoomDefinition
         {
             return "layouts 里每一套的 gap 与 lateral 都是 0：列了等于没列（检查是不是把键名拼错了）";
         }
+        for (Partition partition : this.partitions)
+        {
+            String partitionError = partition.resolve(id, w, d, h);
+            if (partitionError != null)
+            {
+                return partitionError;
+            }
+        }
+        String clash = checkPartitionsClearOfStakes(id);
+        if (clash != null)
+        {
+            return clash;
+        }
         if (this.pillars < 0 || this.pillars * 4 >= Math.min(w, d))
         {
             return "pillars " + this.pillars + " 太多，房间 " + w + "x" + d + " 放不下";
@@ -239,6 +261,61 @@ public class RoomDefinition
     private static int interiorCells(int w, int d)
     {
         return Math.max(1, (w - 2) * (d - 2));
+    }
+
+    /** 隔断占用的室内格（含端点），供校验与建房共用同一份口径。 */
+    public List<int[]> partitionCells()
+    {
+        List<int[]> cells = new ArrayList<>();
+        for (Partition partition : this.partitions)
+        {
+            cells.addAll(partition.cells());
+        }
+        return cells;
+    }
+
+    /**
+     * 隔断不许压住站怪点，也不许压住 BOSS 房的中心舞台。站怪点是确定的内圈排布，
+     * 所以这件事在数据阶段就能判，不用等到运行期发现"怪卡进墙里"。
+     */
+    @Nullable
+    private String checkPartitionsClearOfStakes(String id)
+    {
+        if (this.partitions.isEmpty())
+        {
+            return null;
+        }
+        List<int[]> cells = partitionCells();
+        for (int[] point : localSpawnCells())
+        {
+            if (containsCell(cells, point[0], point[1]))
+            {
+                return "房间 " + id + " 的隔断压住了站怪点 (" + point[0] + "," + point[1]
+                        + ")：怪会卡进墙里，玩家永远打不到它，波次清不完";
+            }
+        }
+        if (this.bossRoom)
+        {
+            int[] anchor = localBossAnchor();
+            if (containsCell(cells, anchor[0], anchor[1]))
+            {
+                return "房间 " + id + " 是 BOSS 房，隔断却压住了中心舞台 (" + anchor[0] + "," + anchor[1]
+                        + ")：BOSS 会嵌在墙里";
+            }
+        }
+        return null;
+    }
+
+    private static boolean containsCell(List<int[]> cells, int x, int z)
+    {
+        for (int[] cell : cells)
+        {
+            if (cell[0] == x && cell[1] == z)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Nullable
@@ -274,33 +351,53 @@ public class RoomDefinition
      */
     public List<BlockPos> spawnPointsAt(BlockPos roomOrigin)
     {
-        List<BlockPos> ring = new ArrayList<>();
+        List<BlockPos> points = new ArrayList<>();
+        for (int[] cell : localSpawnCells())
+        {
+            points.add(roomOrigin.offset(cell[0], 1, cell[1]));
+        }
+        return points;
+    }
+
+    /**
+     * 站怪点的<b>室内局部</b>坐标 [dx, dz]。校验必须走这一份而不是上面那份：
+     * {@code BlockPos} 的类初始化会去拉 log4j，而离线门 {@code checkTrialData} 跑在没有日志实现的
+     * 工具 JVM 里，一碰就炸（本机踩过的同一条）。所以"点怎么排"只在这里算一次，两边共用。
+     */
+    public List<int[]> localSpawnCells()
+    {
+        List<int[]> ring = new ArrayList<>();
         int w = width();
         int d = depth();
         for (int dx = 1; dx < w - 1 && ring.size() < this.spawnPoints; dx++)
         {
-            ring.add(new BlockPos(roomOrigin.getX() + dx, roomOrigin.getY() + 1, roomOrigin.getZ() + 1));
-            ring.add(new BlockPos(roomOrigin.getX() + dx, roomOrigin.getY() + 1, roomOrigin.getZ() + d - 2));
+            ring.add(new int[] {dx, 1});
+            ring.add(new int[] {dx, d - 2});
         }
         for (int dz = 1; dz < d - 1 && ring.size() < this.spawnPoints; dz++)
         {
-            ring.add(new BlockPos(roomOrigin.getX() + 1, roomOrigin.getY() + 1, roomOrigin.getZ() + dz));
-            ring.add(new BlockPos(roomOrigin.getX() + w - 2, roomOrigin.getY() + 1, roomOrigin.getZ() + dz));
+            ring.add(new int[] {1, dz});
+            ring.add(new int[] {w - 2, dz});
         }
         while (ring.size() < this.spawnPoints)
         {
             // 内圈不够用就向中心补，保证点数与声明一致
             int extra = ring.size();
-            ring.add(new BlockPos(roomOrigin.getX() + 2 + extra % Math.max(1, w - 4), roomOrigin.getY() + 1,
-                    roomOrigin.getZ() + 2 + (extra / 2) % Math.max(1, d - 4)));
+            ring.add(new int[] {2 + extra % Math.max(1, w - 4), 2 + (extra / 2) % Math.max(1, d - 4)});
         }
-        return ring.subList(0, this.spawnPoints);
+        return ring.subList(0, Math.min(this.spawnPoints, ring.size()));
     }
 
     /** BOSS 房的中心站位。 */
     public BlockPos bossAnchor(BlockPos roomOrigin)
     {
         return roomOrigin.offset(width() / 2, 1, depth() / 2);
+    }
+
+    /** 中心舞台的室内局部坐标，校验用（理由同 {@link #localSpawnCells}）。 */
+    public int[] localBossAnchor()
+    {
+        return new int[] {width() / 2, depth() / 2};
     }
 
     public static class CoverEntry
@@ -482,5 +579,88 @@ public class RoomDefinition
             }
         }
         return true;
+    }
+
+    /**
+     * 一道房内隔断：室内局部坐标上的一条轴对齐线段，沿线从地板往上砌 {@code height} 格。
+     * <p>
+     * {@code height} 为 1 时玩家与怪都跳得过去，只挡视线；2 格起就是真的拦路——所以"隔断会不会
+     * 把房里封出不通的小间"必须由判据盯着，而不是靠作者自觉。
+     */
+    public static class Partition
+    {
+        @SerializedName("name")
+        public String name;
+
+        /** 线段起点 [dx, dz]（室内局部格）。 */
+        @SerializedName("from")
+        public List<Integer> from = new ArrayList<>();
+
+        /** 线段终点 [dx, dz]，含端点。与起点同 dx 或同 dz。 */
+        @SerializedName("to")
+        public List<Integer> to = new ArrayList<>();
+
+        @SerializedName("block")
+        public String block = "minecraft:blackstone_wall";
+
+        /** 隔断高度（格），1 起。 */
+        @SerializedName("height")
+        public int height = 1;
+
+        /** 沿线段铺开的格（含端点）。斜线在这里会退化成"每步同时动两轴"的非法写法，校验已先拦掉。 */
+        public List<int[]> cells()
+        {
+            List<int[]> cells = new ArrayList<>();
+            if (this.from.size() != 2 || this.to.size() != 2)
+            {
+                return cells;
+            }
+            int x0 = this.from.get(0);
+            int z0 = this.from.get(1);
+            int x1 = this.to.get(0);
+            int z1 = this.to.get(1);
+            int dx = Integer.compare(x1, x0);
+            int dz = Integer.compare(z1, z0);
+            int steps = Math.abs(x1 - x0) + Math.abs(z1 - z0);
+            for (int i = 0; i <= steps; i++)
+            {
+                cells.add(new int[] {x0 + dx * i, z0 + dz * i});
+            }
+            return cells;
+        }
+
+        @Nullable
+        String resolve(String roomId, int w, int d, int h)
+        {
+            String where = "房间 " + roomId + " 的隔断 " + (this.name == null ? "?" : this.name);
+            if (this.from.size() != 2 || this.to.size() != 2)
+            {
+                return where + " 的 from/to 必须是 [dx, dz] 两个整数";
+            }
+            int x0 = this.from.get(0);
+            int z0 = this.from.get(1);
+            int x1 = this.to.get(0);
+            int z1 = this.to.get(1);
+            if (x0 != x1 && z0 != z1)
+            {
+                return where + " 不是轴对齐的线段：(" + x0 + "," + z0 + ")→(" + x1 + "," + z1
+                        + ")，要么同 dx 要么同 dz（斜线铺出来是断断续续的格子）";
+            }
+            if (x0 < 1 || x1 < 1 || z0 < 1 || z1 < 1 || x0 > w - 2 || x1 > w - 2 || z0 > d - 2 || z1 > d - 2)
+            {
+                return where + " 越出了室内（dx 要在 1~" + (w - 2) + "，dz 要在 1~" + (d - 2)
+                        + "）：贴外墙写等于改外墙，门洞那一侧还会把玩家堵在门外";
+            }
+            String blockError = checkBlockId("partition.block", this.block);
+            if (blockError != null)
+            {
+                return where + " 的 " + blockError;
+            }
+            if (this.height < 1 || this.height > h)
+            {
+                return where + " 的 height 要在 1~" + h + "（室内高）之间，当前 " + this.height;
+            }
+            return null;
+        }
     }
 }

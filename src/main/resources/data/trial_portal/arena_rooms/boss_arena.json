@@ -46,5 +46,35 @@
       "gap": 16,
       "lateral": 1
     }
+  ],
+  "partitions": [
+    {
+      "name": "北侧左",
+      "from": [5, 5],
+      "to": [8, 5],
+      "block": "minecraft:polished_blackstone_wall",
+      "height": 2
+    },
+    {
+      "name": "北侧右",
+      "from": [10, 5],
+      "to": [13, 5],
+      "block": "minecraft:polished_blackstone_wall",
+      "height": 2
+    },
+    {
+      "name": "南侧左",
+      "from": [5, 13],
+      "to": [8, 13],
+      "block": "minecraft:polished_blackstone_wall",
+      "height": 2
+    },
+    {
+      "name": "南侧右",
+      "from": [10, 13],
+      "to": [13, 13],
+      "block": "minecraft:polished_blackstone_wall",
+      "height": 2
+    }
   ]
 }
