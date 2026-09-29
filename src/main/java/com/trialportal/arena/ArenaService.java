@@ -213,6 +213,11 @@ public final class ArenaService
         }
         recordReturnPoint(manager, player);
         int cell = manager.allocateCell(player.getUUID(), TrialMode.CHALLENGE, arena);
+        if (cell < 0)
+        {
+            TrialFeedback.failure(player, "闯关段的隔间编号已用尽，等一会儿再试（详见服务端日志）");
+            return false;
+        }
         BlockPos origin = cellOrigin(cell);
         buildPlatform(arena, origin, TrialMode.CHALLENGE);
         sweepCellMobs(arena, cell, manager.reachOf(player.getUUID()),
@@ -243,6 +248,12 @@ public final class ArenaService
         }
         recordReturnPoint(manager, player);
         int cell = manager.allocateCell(player.getUUID(), definition.mode, arena);
+        if (cell < 0)
+        {
+            TrialFeedback.failure(player, "「" + definition.displayName + "」这一段的隔间编号已用尽，"
+                    + "等一会儿再试（详见服务端日志）");
+            return false;
+        }
         BlockPos origin = cellOrigin(cell);
         buildPlatform(arena, origin, definition.mode);
         sweepCellMobs(arena, cell, manager.reachOf(player.getUUID()),

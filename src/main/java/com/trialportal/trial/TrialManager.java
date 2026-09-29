@@ -212,8 +212,9 @@ public class TrialManager extends SavedData
      */
     public int allocateCell(UUID playerId, TrialMode mode, @Nullable ServerLevel arena)
     {
+        int base = mode.cellBase();
         Integer existing = this.arenaCells.get(playerId);
-        if (existing != null && existing >= mode.cellBase() && existing < mode.cellBase() + 1000)
+        if (existing != null && existing >= base && existing < base + CELLS_PER_MODE)
         {
             return existing;
         }
@@ -221,16 +222,47 @@ public class TrialManager extends SavedData
         {
             // 换玩法了。旧编号要是只被覆盖掉，就再没人记得那儿有一间房，平台会永远留在虚空里。
             // 有活会话时一律不拆：那间就是他此刻站着的场地（开局入口已先拒，这里是第二道保险）。
-            com.trialportal.arena.ArenaService.releaseCellAt(arena, existing, reachOf(playerId));
+            // 必须把真实足迹一起递过去：只按声明盒子拆，超出尺寸的装饰（走廊拐行、隔断）就连同它的
+            // 强制加载区块一起留在虚空里。
+            com.trialportal.arena.ArenaService.releaseCellAt(arena, existing, reachOf(playerId),
+                    builtBoxOf(playerId));
         }
-        int candidate = mode.cellBase();
-        while (this.arenaCells.containsValue(candidate))
+        if (existing != null)
+        {
+            // 进深与足迹是"那一间 cell"的属性，不是玩家的。带着上一段的数字开新间，recordBuilt 会把两者
+            // 并成一个盒子：拆台时主线程要扫几十万个位置，还会把沿途别人正在用的隔间一起 AIR 掉。
+            clearCellAccounting(playerId);
+        }
+        int candidate = base;
+        while (candidate < base + CELLS_PER_MODE && this.arenaCells.containsValue(candidate))
         {
             candidate++;
+        }
+        if (candidate >= base + CELLS_PER_MODE)
+        {
+            LOGGER.error("[trial_portal] {} 段的隔间编号已用尽（{}~{}），拒绝再开一场",
+                    mode, base, base + CELLS_PER_MODE - 1);
+            return -1;
         }
         this.arenaCells.put(playerId, candidate);
         this.setDirty();
         return candidate;
+    }
+
+    /** 一个玩法段能分到的隔间数。三段各 1000 个编号，越界就会踩进下一个分段、两个人共占一块地。 */
+    public static final int CELLS_PER_MODE = 1000;
+
+    /** 只销进深与足迹，不销编号（编号由 freeCell 管）。换间之后这两个值就属于另一间房了。 */
+    private void clearCellAccounting(UUID playerId)
+    {
+        // 两次 remove 都必须真的执行：写成 `a != null || b != null` 会在前者命中时短路，
+        // 足迹就悄悄留在账上（这条判据第一次跑就把它抓出来了）。
+        boolean touched = this.arenaReach.remove(playerId) != null;
+        touched |= this.arenaBuilt.remove(playerId) != null;
+        if (touched)
+        {
+            this.setDirty();
+        }
     }
 
     public int cellOf(UUID playerId)
@@ -1217,22 +1249,26 @@ public class TrialManager extends SavedData
         {
             recordFloor(player.getUUID(), session.waveNumber());
         }
-        if (outcome == Outcome.ABANDONED)
+        boolean settle = outcome != Outcome.ABANDONED;
+        if (!settle)
         {
             // 只有管理员中止与定义丢失会作废奖励；「走出去」不再吞奖励
             session.pending.clear();
         }
-        else
+        else if (outcome == Outcome.LEFT)
         {
-            if (outcome == Outcome.LEFT)
-            {
-                // 出去就算没通关：奖励照发，但不算成功，也不给通关那一份
-                TrialFeedback.chat(player, "[试炼] 提前离场，本场按未通关计");
-            }
-            grantRewards(player, session);
+            // 出去就算没通关：奖励照发，但不算成功，也不给通关那一份
+            TrialFeedback.chat(player, "[试炼] 提前离场，本场按未通关计");
         }
         clearMobs(level, session);
         com.trialportal.arena.ArenaService.returnHome(player);
+        if (settle)
+        {
+            // 发奖必须排在送走之后。returnHome 里同 tick 就拆台：地板被抽成空气、强制加载松掉，
+            // 所以掉在场内的物品既没人捡、也没区块替它保存——以前报的"发放 N 件（背包满的部分掉在脚下）"
+            // 里那"脚下"根本不是脚下，而是正在消失的虚空（reward_to_inventory=false 时是整批消失）。
+            grantRewards(player, session);
+        }
     }
 
     /**
@@ -1296,9 +1332,27 @@ public class TrialManager extends SavedData
 
     private void dropAtFeet(ServerPlayer player, ItemStack stack)
     {
+        if (com.trialportal.arena.ArenaService.isArena(player.level().dimension()))
+        {
+            // 场地里掉东西等于扔掉。end() 已经把发奖排在送走之后，走到这里说明顺序又被改回去了——
+            // 不静默丢，转存进"下一场补发"那本账（与死亡转存同一个去处），并且把话说响。
+            LOGGER.error("[trial_portal] {} 的奖励仍在场地里就要掉落，改成转存下一场：{} x {}",
+                    player.getScoreboardName(), stack.getCount(), ForgeRegistries.ITEMS.getKey(stack.getItem()));
+            this.carriedOver.computeIfAbsent(player.getUUID(), id -> new ArrayList<>())
+                    .add(entryOf(stack));
+            return;
+        }
         ItemEntity entity = new ItemEntity(player.level(), player.getX(), player.getY() + 0.5D, player.getZ(), stack);
         entity.setPickUpDelay(20);
         player.level().addFreshEntity(entity);
+    }
+
+    private static TrialDefinition.RewardEntry entryOf(ItemStack stack)
+    {
+        TrialDefinition.RewardEntry entry = new TrialDefinition.RewardEntry();
+        entry.item = String.valueOf(ForgeRegistries.ITEMS.getKey(stack.getItem()));
+        entry.count = stack.getCount();
+        return entry;
     }
 
     /** /tei trial list 之类的诊断用。 */

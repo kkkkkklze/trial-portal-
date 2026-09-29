@@ -827,13 +827,81 @@ public final class TrialSelfTest
         BlockPos oldOrigin = com.trialportal.arena.ArenaService.cellOrigin(oldCell);
         com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, oldOrigin, TrialMode.CHALLENGE);
         int built = countPlatformBlocks(arenaLevel, oldOrigin, radius);
+        // 上一间房建出去多远、真实写过哪些格子，都得先记在账上——不记就等于让"清零"这条判据
+        // 在没有旧值的情况下跑，怎么注入都是绿（本轮第一版就是这么空的）。
+        BlockPos oldTail = oldOrigin.offset(0, 0, radius + 12);
+        arenaLevel.setBlock(oldTail, net.minecraft.world.level.block.Blocks.GILDED_BLACKSTONE.defaultBlockState(),
+                net.minecraft.world.level.block.Block.UPDATE_ALL);
+        manager.recordBuilt(player, 12, new net.minecraft.world.phys.AABB(oldOrigin.getX() - 1, oldOrigin.getY(),
+                oldOrigin.getZ() - 1, oldOrigin.getX() + 2D, oldOrigin.getY() + 2D, oldTail.getZ() + 2D));
+        check(failures, manager.reachOf(player) == 12 && manager.builtBoxOf(player) != null,
+                "换段探针没能把旧隔间的进深/足迹记上账，后面的清零判据会在空数据上跑绿");
         int newCell = manager.allocateCell(player, TrialMode.TRIAL, arenaLevel);
         check(failures, built > 0 && newCell != oldCell,
                 "探针没能造出旧隔间（建了 " + built + " 块，跨段新编号 " + newCell + "，旧编号 " + oldCell + "）");
         int leftAfter = countPlatformBlocks(arenaLevel, oldOrigin, radius);
         check(failures, leftAfter == 0,
                 "换玩法后旧隔间 " + oldCell + " 还留着 " + leftAfter + " 块平台：编号会被重新分给别的玩家");
+        // 进深与足迹属于"那一间 cell"，不属于玩家。留着就会串到新隔间：recordBuilt 取并集之后，
+        // 新间的拆场盒子横跨两个分段（相差 2000 个编号 ≈ 32 万格），主线程遍历几十万个位置，
+        // 还会把沿途别人的台子一起 AIR 掉。
+        check(failures, manager.reachOf(player) == 0 && manager.builtBoxOf(player) == null,
+                "换段之后玩家的进深/足迹没清零（reach=" + manager.reachOf(player)
+                        + " built=" + manager.builtBoxOf(player) + "），新隔间会继承旧隔间的拆场盒子");
+        // 装饰超出声明尺寸时，换段那一次拆台必须按真实足迹来（三参重载不传 built 的旧写法会留下残骸）
+        java.util.UUID tailPlayer = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:swap_tail".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int tailCell = manager.allocateCell(tailPlayer, TrialMode.CHALLENGE, null);
+        BlockPos tailOrigin = com.trialportal.arena.ArenaService.cellOrigin(tailCell);
+        com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, tailOrigin, TrialMode.CHALLENGE);
+        BlockPos tailDecor = tailOrigin.offset(com.trialportal.arena.ArenaService.radius() + 3, 0, 0);
+        arenaLevel.setBlock(tailDecor, net.minecraft.world.level.block.Blocks.GILDED_BLACKSTONE.defaultBlockState(),
+                net.minecraft.world.level.block.Block.UPDATE_ALL);
+        manager.recordBuilt(tailPlayer, 0, new net.minecraft.world.phys.AABB(tailDecor.getX(), tailDecor.getY(),
+                tailDecor.getZ(), tailDecor.getX() + 1D, tailDecor.getY() + 1D, tailDecor.getZ() + 1D));
+        manager.allocateCell(tailPlayer, TrialMode.TRIAL, arenaLevel);
+        check(failures, arenaLevel.getBlockState(tailDecor).isAir(),
+                "换段拆台没按真实足迹清：超出声明尺寸的装饰（" + tailDecor.toShortString() + "）还留在虚空里");
+        manager.freeCell(tailPlayer);
         manager.freeCell(player);
+        probeCellNumberStaysInsideSegment(manager, failures);
+    }
+
+    /**
+     * 编号不许越段：一段 1000 个格子，填满之后必须拒发，而不是摸进下一个分段——
+     * 两个玩家落在同一个 cell 上时，一方拆台就把另一方的场地与怪一起清掉。
+     * 这里"填到拒绝为止"而不是"正好填 1000 个"：本 JVM 里前面几条判法已经占了几个编号。
+     */
+    private static void probeCellNumberStaysInsideSegment(TrialManager manager, List<String> failures)
+    {
+        int base = TrialMode.TOWER.cellBase();
+        int top = base + TrialManager.CELLS_PER_MODE;
+        List<java.util.UUID> filled = new ArrayList<>();
+        boolean refused = false;
+        for (int i = 0; i < TrialManager.CELLS_PER_MODE + 8 && !refused; i++)
+        {
+            java.util.UUID fake = java.util.UUID.nameUUIDFromBytes(
+                    ("trial_portal:selftest:flood:" + i).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            int cell = manager.allocateCell(fake, TrialMode.TOWER, null);
+            if (cell < 0)
+            {
+                refused = true;
+                break;
+            }
+            if (cell < base || cell >= top)
+            {
+                failures.add("第 " + i + " 个假玩家拿到了越段编号 " + cell + "（段区间 " + base + "~"
+                        + (top - 1) + "）：两个人会共占一块地");
+                return;
+            }
+            filled.add(fake);
+        }
+        check(failures, refused,
+                "填满一段编号之后还在继续发（只发出 " + filled.size() + " 个就被我停住了），越段迟早发生");
+        for (java.util.UUID fake : filled)
+        {
+            manager.freeCell(fake);
+        }
     }
 
     /**
