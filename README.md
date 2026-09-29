@@ -25,7 +25,7 @@ Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼�
 | MinecraftForge | **47.4.23**（`forge_version_range=[47,)`） |
 | 构建工具链 | ModDevGradle Legacy `net.neoforged.moddev.legacyforge` 2.0.147 |
 | Gradle | 8.14.3（wrapper，腾讯云镜像，本机已缓存） |
-| Java | 17：`<本机 JDK17 目录>`（写死在 `gradle.properties`） |
+| Java | 17。仓库里不写机器路径：Gradle 自动发现即可；发现不到时（例如 JDK 放在 `$GRADLE_USER_HOME/jdks` 里又嵌套了一层）把 `org.gradle.java.installations.paths=<你的 JDK17 目录>` 写进 `~/.gradle/gradle.properties` |
 | 映射 | Mojang 官方映射（MDG 默认，字段名即 `official`） |
 | 产物 | `build/libs/trial_portal-1.0.0.jar`（`reobfJar` 已做 SRG 重混淆，可直接进 `mods/`） |
 
