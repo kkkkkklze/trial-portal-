@@ -20,9 +20,11 @@ public final class ModCreativeTabs
             .icon(() -> new ItemStack(ModItems.CHALLENGE_PORTAL.get()))
             .displayItems((parameters, output) ->
             {
+                output.accept(new ItemStack(ModItems.ARENA_EXIT.get()));
                 output.accept(new ItemStack(ModItems.CHALLENGE_PORTAL.get()));
                 output.accept(new ItemStack(ModItems.TOWER_PORTAL.get()));
                 output.accept(new ItemStack(ModItems.TRIAL_PORTAL.get()));
+                output.accept(new ItemStack(ModItems.WARD_PYLON.get()));
             })
             .build());
 }

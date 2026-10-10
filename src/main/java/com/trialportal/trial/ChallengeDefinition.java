@@ -158,6 +158,29 @@ public class ChallengeDefinition
             return this.spawnHeight == null ? 2.0D : Math.max(1.0D, this.spawnHeight);
         }
 
+        /**
+         * 把 {@code mobs[]} 按各自 count 展开成一条轮转队列：这一档写僵尸×2 + 骷髅×1，
+         * 补怪就按「僵尸,僵尸,骷髅」的比例循环。
+         * <p>
+         * 以前 count 被校验却没有任何人读——写 4 和写 1 在游戏里一模一样，正是"配了等于没配"。
+         * count 是<b>配比</b>不是总量：场上有多少只由 {@code mob_cap} 与 {@code spawn_batch} 管。
+         */
+        public java.util.List<TrialDefinition.MobEntry> spawnPlan()
+        {
+            java.util.List<TrialDefinition.MobEntry> plan = new java.util.ArrayList<>();
+            for (TrialDefinition.MobEntry entry : this.mobs)
+            {
+                for (int i = 0; i < Math.max(1, entry.count); i++)
+                {
+                    plan.add(entry);
+                }
+            }
+            return plan;
+        }
+
+        /** 配比队列的上限：超过这个数说明作者把 count 当成"这波总共几只"在写了。 */
+        public static final int MAX_PLAN_ENTRIES = 64;
+
         @Nullable
         public String resolve(String where)
         {
@@ -183,6 +206,12 @@ public class ChallengeDefinition
             if (this.mobCap < 1 || this.spawnBatch < 1)
             {
                 return where + " 的 mob_cap / spawn_batch 都要 ≥1";
+            }
+            int plan = spawnPlan().size();
+            if (plan > MAX_PLAN_ENTRIES)
+            {
+                return where + " 的 mobs 按 count 展开后有 " + plan + " 条，超过 " + MAX_PLAN_ENTRIES
+                        + "：count 是配比不是总量，场上有多少只该由 mob_cap 管";
             }
             if (this.spawnIntervalTicks < 20)
             {

@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.annotations.SerializedName;
 import com.trialportal.arena.RoomDefinition;
+import com.trialportal.trial.DefenseDefinition;
 import com.trialportal.boss.BossAffix;
 import com.trialportal.trial.ChallengeDefinition;
 import com.trialportal.trial.TrialDefinition;
@@ -46,6 +47,7 @@ public final class TrialDataCheck
     private int checkedRooms;
     private int checkedChallenges;
     private int checkedRecipes;
+    private int checkedDefenses;
 
     public static void main(String[] args) throws IOException
     {
@@ -55,11 +57,13 @@ public final class TrialDataCheck
         check.checkTrials(root.resolve("trials"), affixes);
         check.checkRooms(root.resolve("arena_rooms"));
         check.checkChallenges(root.resolve("challenges"));
+        check.checkDefenses(root.resolve("defenses"));
         check.checkRecipes(root.resolve("recipes"));
+        check.checkLootTables(root.resolve("loot_tables/blocks"));
 
-        System.out.printf(Locale.ROOT, "词条：%d 条；试炼：%d 份；房间：%d 间；副本：%d 份；配方：%d 条%n",
+        System.out.printf(Locale.ROOT, "词条：%d 条；试炼：%d 份；房间：%d 间；副本：%d 份；配方：%d 条；守塔：%d 份%n",
                 check.checkedAffixes, check.checkedTrials, check.checkedRooms, check.checkedChallenges,
-                check.checkedRecipes);
+                check.checkedRecipes, check.checkedDefenses);
         if (check.problems.isEmpty())
         {
             System.out.println("checkTrialData 通过：没有字段缺失、没有失效引用、逐波逐层都能取到内容");
@@ -120,6 +124,11 @@ public final class TrialDataCheck
                 continue; // 形状已经错了，产物那步不必再报
             }
             checkRecipeResult(recipe, name, where);
+        }
+        if (checkedRecipes == 0)
+        {
+            // 与房间表/副本那两条同一个道理：目录被清空时不能一声不响地绿过去
+            problems.add("recipes/ 一份配方都没有：往返门只能靠创造栏或 /give 拿到，生存里进不去大厅");
         }
     }
 
@@ -280,6 +289,93 @@ public final class TrialDataCheck
     private static final Set<String> RECIPE_KEYS = Set.of(
             "type", "group", "category", "pattern", "key", "ingredients", "result");
 
+    /**
+     * 掉落表按形状判：表是否真注册到方块上由运行期判据管（这里没有注册表）。
+     * 这条值得单独立门——配方上线后门方块有了真实成本，表写错就是玩家一镐亏掉一颗下界星，
+     * 而原版加载器一声不响。
+     */
+    private void checkLootTables(Path directory) throws IOException
+    {
+        int checked = 0;
+        for (Path file : jsonFiles(directory))
+        {
+            String name = file.getFileName().toString().replace(".json", "");
+            String where = "掉落表 " + name;
+            checked++;
+            JsonElement json;
+            try (Reader reader = Files.newBufferedReader(file))
+            {
+                json = JsonParser.parseReader(reader);
+            }
+            catch (Exception exception)
+            {
+                problems.add(where + "：JSON 解析失败 —— " + exception.getMessage());
+                continue;
+            }
+            if (!json.isJsonObject())
+            {
+                problems.add(where + "：根不是对象");
+                continue;
+            }
+            JsonObject table = json.getAsJsonObject();
+            if (!"minecraft:block".equals(text(table, "type")))
+            {
+                problems.add(where + "：type 应为 minecraft:block（当前 " + text(table, "type") + "）");
+            }
+            JsonElement pools = table.get("pools");
+            if (pools == null || !pools.isJsonArray() || pools.getAsJsonArray().isEmpty())
+            {
+                problems.add(where + "：pools 是空的，敲掉这个方块什么都不掉");
+                continue;
+            }
+            for (JsonElement pool : pools.getAsJsonArray())
+            {
+                JsonElement entries = pool.isJsonObject() ? pool.getAsJsonObject().get("entries") : null;
+                if (entries == null || !entries.isJsonArray() || entries.getAsJsonArray().isEmpty())
+                {
+                    problems.add(where + "：有一个 pool 没有 entries");
+                    continue;
+                }
+                for (JsonElement entry : entries.getAsJsonArray())
+                {
+                    checkLootEntry(where, name, entry);
+                }
+            }
+        }
+        if (checked == 0)
+        {
+            problems.add("loot_tables/blocks/ 一份掉落表都没有：门方块敲掉不返还，而它们现在是有成本的");
+        }
+    }
+
+    private void checkLootEntry(String where, String fileName, JsonElement entry)
+    {
+        if (!entry.isJsonObject())
+        {
+            problems.add(where + "：有条目不是对象");
+            return;
+        }
+        JsonObject object = entry.getAsJsonObject();
+        String type = text(object, "type");
+        if (!type.isEmpty() && !"minecraft:item".equals(type))
+        {
+            problems.add(where + "：条目类型 " + type + " 不是 item（这张表是给方块掉落的）");
+            return;
+        }
+        String item = text(object, "name");
+        ResourceLocation key = ResourceLocation.tryParse(item);
+        if (key == null)
+        {
+            problems.add(where + "：条目的 name 不是合法 ID（" + item + "）");
+            return;
+        }
+        if (!key.getPath().equals(fileName))
+        {
+            problems.add(where + "：文件叫 " + fileName + " 却掉 " + key.getPath()
+                    + "（表名与方块名不一致时原版根本不会用它，等于没掉）");
+        }
+    }
+
     /** 资源副本：三档难度必须齐全，且每档都要有怪、有上限、有补充节奏（杀奖可以为空，表示这档不给奖）。 */
     private void checkChallenges(Path directory) throws IOException
     {
@@ -325,6 +421,51 @@ public final class TrialDataCheck
         if (checkedChallenges == 0)
         {
             problems.add("challenges/ 里一份副本都没有，闯关玩法就没内容可选");
+        }
+    }
+
+    /** 守塔表：波次复用 trials 的 Wave 模型，这里只额外核"有没有内容"与每波展开后至少一只。 */
+    private void checkDefenses(Path directory) throws IOException
+    {
+        for (Path file : jsonFiles(directory))
+        {
+            String id = idOf(directory, file);
+            DefenseDefinition defense = parse(file, id, DefenseDefinition.class);
+            if (defense == null)
+            {
+                continue;
+            }
+            checkedDefenses++;
+            String error;
+            try
+            {
+                error = defense.resolve(id);
+            }
+            catch (IllegalArgumentException exception)
+            {
+                error = exception.getMessage();
+            }
+            if (error != null)
+            {
+                problems.add(id + "（守塔）：" + error);
+                continue;
+            }
+            for (int index = 0; index < defense.waves.size(); index++)
+            {
+                int total = 0;
+                for (TrialDefinition.MobEntry entry : defense.waves.get(index).mobs)
+                {
+                    total += Math.max(1, entry.count);
+                }
+                if (total == 0)
+                {
+                    problems.add(id + "（守塔）：第 " + (index + 1) + " 波展开后一只都不剩");
+                }
+            }
+        }
+        if (checkedDefenses == 0)
+        {
+            problems.add("defenses/ 里一份守塔定义都没有，守塔玩法就没内容可开");
         }
     }
 
@@ -620,7 +761,24 @@ public final class TrialDataCheck
             JsonElement value = member.getValue();
             if (value.isJsonObject())
             {
-                checkObjectKeys(where + "." + member.getKey(), value.getAsJsonObject(), field.getType());
+                Class<?> valueType = mapValueType(field);
+                if (valueType != null)
+                {
+                    // Map 字段的键是数据不是字段名（difficulties 的 easy/normal/hard），
+                    // 之前整棵子树因此绕过了白名单——把键名拼错、把 spawn_batch 写成 spawn_bat 都没人管。
+                    for (Map.Entry<String, JsonElement> keyed : value.getAsJsonObject().entrySet())
+                    {
+                        if (keyed.getValue().isJsonObject())
+                        {
+                            checkObjectKeys(where + "." + member.getKey() + "[" + keyed.getKey() + "]",
+                                    keyed.getValue().getAsJsonObject(), valueType);
+                        }
+                    }
+                }
+                else
+                {
+                    checkObjectKeys(where + "." + member.getKey(), value.getAsJsonObject(), field.getType());
+                }
             }
             else if (value.isJsonArray())
             {
@@ -681,6 +839,19 @@ public final class TrialDataCheck
         Type argument = parameterized.getActualTypeArguments().length == 0
                 ? null : parameterized.getActualTypeArguments()[0];
         return argument instanceof Class<?> element && isModel(element) ? element : null;
+    }
+
+    /** Map&lt;K, X&gt; 里的 X。值类型不是自家模型就返回 null（词条 attributes 那种开放键字典不进去）。 */
+    private static Class<?> mapValueType(Field field)
+    {
+        if (!Map.class.isAssignableFrom(field.getType())
+                || !(field.getGenericType() instanceof ParameterizedType parameterized))
+        {
+            return null;
+        }
+        Type[] arguments = parameterized.getActualTypeArguments();
+        return arguments.length == 2 && arguments[1] instanceof Class<?> valueType && isModel(valueType)
+                ? valueType : null;
     }
 
     private static List<Path> jsonFiles(Path directory) throws IOException

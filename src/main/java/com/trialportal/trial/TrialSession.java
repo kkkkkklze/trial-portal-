@@ -72,6 +72,18 @@ public class TrialSession
     /** 资源副本 ID（只有 CHALLENGE 玩法有值）。 */
     @Nullable
     public String challengeId;
+    /** 守塔定义 ID（只有 DEFENSE 玩法有值；它的内容在 defenses/，不在 trials/）。 */
+    @Nullable
+    public String defenseId;
+    /** 被守的那座塔在哪。血量存在它的方块实体里，会话只记位置。 */
+    @Nullable
+    public net.minecraft.core.BlockPos towerPos;
+    /**
+     * 这一场实际用的守塔内容——{@code DefenseLibrary} 里那份的**副本**。
+     * {@code /tei defense} 改的是它，改不到库里的原件（否则同一次加载里别人开局就拿到你调过的数）。
+     */
+    @Nullable
+    public DefenseDefinition liveDefense;
     /** 本局难度键（easy/normal/hard）。 */
     @Nullable
     public String difficulty;
@@ -106,10 +118,53 @@ public class TrialSession
         this.linkX = origin.getX();
     }
 
+    /**
+     * 播报用的名字：三份内容目录各查一次。
+     * <p>
+     * 不能只查 {@code trials/} 再回落到 id：副本的内容在 {@code challenges/}、守塔的在
+     * {@code defenses/}，拿它们的 id 去 {@code trials/} 里找永远得到 null——真机上就打印成了
+     * 「你当前那一场是「null」」。
+     */
+    public String displayName()
+    {
+        TrialDefinition trial = TrialLibrary.get(this.definitionId);
+        if (trial != null)
+        {
+            return trial.displayName;
+        }
+        if (this.challengeId != null)
+        {
+            ChallengeDefinition challenge = ChallengeLibrary.get(this.challengeId);
+            return challenge == null ? this.challengeId : challenge.displayNameOrDefault();
+        }
+        if (this.defenseId != null)
+        {
+            DefenseDefinition defense = DefenseLibrary.get(this.defenseId);
+            return defense == null ? this.defenseId : defense.displayNameOrDefault();
+        }
+        return this.definitionId;
+    }
+
     /** 当前是第几波（1 起）。 */
     public int waveNumber()
     {
         return this.waveIndex + 1;
+    }
+
+    /**
+     * 这一场是什么玩法——只认开局那一刻钉在会话上的那个。
+     * <p>
+     * 不能拿 {@code definitionId} 去 {@code trials/} 里反查再"查不到就当副本"：守塔的内容在
+     * {@code defenses/}，那条反查永远是 null，真机就被打印成了 `first_ward（challenge）`。
+     * {@code definition} 只给老存档兜底（会话没钉玩法的那一代数据）。
+     */
+    public TrialMode modeOf(@Nullable TrialDefinition definition)
+    {
+        if (this.mode != null)
+        {
+            return this.mode;
+        }
+        return definition == null ? TrialMode.CHALLENGE : definition.mode;
     }
 
     public void addReward(List<TrialDefinition.RewardEntry> rewards)

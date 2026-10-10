@@ -3,6 +3,7 @@ package com.trialportal.registry;
 import com.trialportal.TrialPortal;
 import com.trialportal.block.ArenaExitBlock;
 import com.trialportal.block.TrialPortalBlock;
+import com.trialportal.block.WardPylonBlock;
 import com.trialportal.trial.TrialMode;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.SoundType;
@@ -27,11 +28,23 @@ public final class ModBlocks
     public static final RegistryObject<TrialPortalBlock> TRIAL_PORTAL =
             BLOCKS.register("trial_portal", () -> new TrialPortalBlock(TrialMode.TRIAL, properties(MapColor.COLOR_BLUE)));
 
-    /** 场地里的「返回野外」终端：不可破坏、无掉落，只由 ArenaService 程序化放置。 */
+    /**
+     * 守塔那座塔：大厅里的是入口、隔间里的是被守目标。
+     * 按裁定**没有合成配方**（§9 第 11 条④），只由场地程序化摆放 + 创造栏拿得到。
+     */
+    public static final RegistryObject<WardPylonBlock> WARD_PYLON =
+            BLOCKS.register("ward_pylon", () -> new WardPylonBlock(properties(MapColor.COLOR_LIGHT_BLUE)));
+
+    /**
+     * 大厅与野外之间唯一的通道：野外点它进大厅，场地里点它回家（§9 第 12 条）。
+     * 三个玩法门按裁定退回创造栏，进出都只走这一台，所以它要能在生存里合出来、在野外拆得掉。
+     * 场地里那几台由「场地禁止破坏」挡着，不会被拆走。
+     */
     public static final RegistryObject<ArenaExitBlock> ARENA_EXIT =
             BLOCKS.register("arena_exit", () -> new ArenaExitBlock(BlockBehaviour.Properties.of()
                     .mapColor(MapColor.COLOR_BLACK)
-                    .strength(-1.0F, 3600000.0F)
+                    .strength(6.0F, 1200.0F)
+                    .sound(SoundType.AMETHYST)
                     .lightLevel(state -> 4)
                     .noOcclusion()));
 

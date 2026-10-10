@@ -105,6 +105,10 @@ legacyForge {
             if (project.hasProperty('selfTest')) {
                 systemProperty 'trial_portal.selfTest', 'true'
             }
+            // -PmobCensus：启动后把注册表里的可刷怪连属性写 mob-census.tsv（给整合包配内容的取数通道）
+            if (project.hasProperty('mobCensus')) {
+                systemProperty 'trial_portal.mobCensus', 'true'
+            }
         }
 
         data {
@@ -302,6 +306,10 @@ var checkSelfTestMarker = tasks.register("checkSelfTestMarker") {
 }
 tasks.named('runGameTestServer') {
     dependsOn clearSelfTestMarker
+    // -PmobCensus 时服务端要装下一整包的 mod，默认堆不够用
+    if (project.hasProperty('mobCensus')) {
+        maxHeapSize = System.getProperty('trial_portal.censusHeap', '5g')
+    }
 }
 tasks.register('selfTest') {
     group = 'verification'

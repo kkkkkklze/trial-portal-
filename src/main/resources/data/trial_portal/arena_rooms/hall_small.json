@@ -7,7 +7,6 @@
     9
   ],
   "spawn_points": 4,
-  "mob_cap": 8,
   "cover": [
     {
       "block": "minecraft:polished_blackstone_wall",

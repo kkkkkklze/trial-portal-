@@ -1,0 +1,52 @@
+{
+  "comment": "守塔示例：四波怪从结界外缘压进来，它们既打人又拆塔——塔血归零或玩家死亡都算输",
+  "display_name": "石塔夜袭",
+  "icon_item": "minecraft:end_rod",
+  "order": 10,
+  "ward_radius": 16,
+  "tower_health": 320.0,
+  "intermission_ticks": 240,
+  "tower_focus_share": 0.5,
+  "tower_damage_per_hit": 2.0,
+  "tower_hit_interval_ticks": 20,
+  "strength": { "health_multiplier": 1.0 },
+  "waves": [
+    {
+      "title": "第 1 波 · 试探",
+      "mobs": [
+        { "entity": "minecraft:zombie", "count": 3 },
+        { "entity": "minecraft:skeleton", "count": 1 }
+      ]
+    },
+    {
+      "title": "第 2 波 · 两翼",
+      "mobs": [
+        { "entity": "minecraft:zombie", "count": 3 },
+        { "entity": "minecraft:skeleton", "count": 3 }
+      ],
+      "strength": { "speed_multiplier": 1.1 }
+    },
+    {
+      "title": "第 3 波 · 破城",
+      "mobs": [
+        { "entity": "minecraft:cave_spider", "count": 3 },
+        { "entity": "minecraft:creeper", "count": 2 },
+        { "entity": "minecraft:witch", "count": 1 }
+      ],
+      "intermission_ticks": 200
+    },
+    {
+      "title": "第 4 波 · 塔心",
+      "mobs": [
+        { "entity": "minecraft:vindicator", "count": 1, "boss": true },
+        { "entity": "minecraft:pillager", "count": 4 }
+      ],
+      "rewards": [ { "item": "minecraft:golden_apple", "count": 1 } ]
+    }
+  ],
+  "rewards": [
+    { "item": "minecraft:iron_ingot", "count": 3 },
+    { "item": "minecraft:bread", "count": 2 }
+  ],
+  "boss_affix_pool": [ "trial_portal:crusher", "trial_portal:bulwark", "trial_portal:thorns" ]
+}

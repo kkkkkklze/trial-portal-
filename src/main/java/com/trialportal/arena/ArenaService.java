@@ -84,6 +84,27 @@ public final class ArenaService
         return Math.max(1, TrialConfig.ARENA_PLATFORM_RADIUS.get());
     }
 
+    /**
+     * 这一场该铺多宽的台面：守塔按它自己写的结界半径（至少不小于全局默认），其余玩法按默认。
+     * <p>
+     * 开局与"回大厅再回来重铺"两条路都必须走这里——否则第二条会把结界削成默认大小。
+     */
+    public static int platformRadiusFor(@Nullable com.trialportal.trial.TrialMode mode,
+                                        @Nullable com.trialportal.trial.DefenseDefinition defense)
+    {
+        if (mode == com.trialportal.trial.TrialMode.DEFENSE && defense != null)
+        {
+            return Math.max(radius(), defense.wardRadius);
+        }
+        return radius();
+    }
+
+    /** 会话版：没有会话就是默认宽度（大厅）。 */
+    public static int platformRadiusFor(@Nullable com.trialportal.trial.TrialSession session)
+    {
+        return session == null ? radius() : platformRadiusFor(session.mode, session.liveDefense);
+    }
+
     /** 围栏高度。至少 2 才关得住会跳 1 格的怪，配置再高也只是玻璃墙。 */
     public static int fenceHeight()
     {
@@ -119,7 +140,10 @@ public final class ArenaService
         manager.recordHome(uuid, new TrialManager.HomePos(player.level().dimension(), player.getX(), player.getY(),
                 player.getZ(), player.getYRot(), player.getXRot()));
         BlockPos origin = cellOrigin(session == null ? LOBBY_CELL : manager.cellOf(uuid));
-        buildPlatform(arena, origin, session == null ? null : modeOf(session));
+        TrialMode mode = session == null ? null : session.modeOf(TrialLibrary.get(session.definitionId));
+        // 宽度必须跟着这一场走：守塔的结界比默认台面宽，回大厅再回来时按默认半径重铺会把结界削掉一圈，
+        // 人站在被削掉的那半张台上就是站在虚空里
+        buildPlatform(arena, origin, mode, platformRadiusFor(session));
         teleportSafe(arena, player, origin, session == null ? 180.0F : player.getYRot(),
                 session == null ? 0.0F : player.getXRot());
         if (session == null)
@@ -161,11 +185,10 @@ public final class ArenaService
             }
             return beginSession(player, definition);
         }
-        if (modeOf(session) != mode)
+        if (session.modeOf(TrialLibrary.get(session.definitionId)) != mode)
         {
-            TrialDefinition own = TrialLibrary.get(session.definitionId);
-            String name = own == null ? session.challengeId : own.displayName;
-            TrialFeedback.failure(player, "你当前那一场是「" + name + "」，先用返回终端结算再开别的");
+            TrialFeedback.failure(player, "你当前那一场是「" + session.displayName()
+                    + "」，先用往返门结算再开别的");
             return false;
         }
         ServerLevel arena = level(player.server);
@@ -178,16 +201,6 @@ public final class ArenaService
         teleportSafe(arena, player, cellOrigin(session.cell), 180.0F, 0.0F);
         TrialFeedback.chat(player, "[试炼] 已把你的隔间重新铺好，回到上一场继续");
         return true;
-    }
-
-    private static TrialMode modeOf(TrialSession session)
-    {
-        if (session.challengeId != null)
-        {
-            return TrialMode.CHALLENGE; // 副本会话的内容不在 trials/ 里，按玩法归 CHALLENGE
-        }
-        TrialDefinition definition = TrialLibrary.get(session.definitionId);
-        return definition == null ? null : definition.mode;
     }
 
     /**
@@ -208,7 +221,7 @@ public final class ArenaService
         {
             // 必须先拒，再谈动世界：界面里连点两下"确认"就会第二次走到这里，
             // 放行的话下面的 allocateCell 会把他正站着的上一场隔间直接拆掉。
-            TrialFeedback.failure(player, "你已经有一场试炼在进行中，先用返回终端结算");
+            TrialFeedback.failure(player, "你已经有一场试炼在进行中，先用往返门结算");
             return false;
         }
         recordReturnPoint(manager, player);
@@ -243,7 +256,7 @@ public final class ArenaService
         TrialManager manager = TrialManager.get(player.server);
         if (manager.hasSession(player.getUUID()))
         {
-            TrialFeedback.failure(player, "你已经有一场试炼在进行中，先用返回终端结算");
+            TrialFeedback.failure(player, "你已经有一场试炼在进行中，先用往返门结算");
             return false;
         }
         recordReturnPoint(manager, player);
@@ -266,6 +279,64 @@ public final class ArenaService
         }
         // 开局之后必须把玩家送进隔间：判定中心已经跟着 origin 走了，人还留在大厅会在下一 tick 被判离开范围
         teleportSafe(arena, player, origin, 180.0F, 0.0F);
+        return true;
+    }
+
+    /**
+     * 开一局守塔：在自己的 DEFENSE 隔间里按 {@code ward_radius} 铺台、台心立塔、结界四面留门。
+     * 与副本同一条链路（先拒已有会话，再动世界），差别只在地面宽度与那座塔。
+     */
+    public static boolean beginDefense(ServerPlayer player,
+                                       com.trialportal.trial.DefenseDefinition defense)
+    {
+        ServerLevel arena = level(player.server);
+        if (arena == null)
+        {
+            TrialFeedback.failure(player, "试炼场地维度没加载，无法开局");
+            return false;
+        }
+        TrialManager manager = TrialManager.get(player.server);
+        if (manager.hasSession(player.getUUID()))
+        {
+            TrialFeedback.failure(player, "你已经有一场试炼在进行中，先用往返门结算");
+            return false;
+        }
+        recordReturnPoint(manager, player);
+        int cell = manager.allocateCell(player.getUUID(), TrialMode.DEFENSE, arena);
+        if (cell < 0)
+        {
+            TrialFeedback.failure(player, "守塔段的隔间编号已用尽，等一会儿再试（详见服务端日志）");
+            return false;
+        }
+        BlockPos origin = cellOrigin(cell);
+        int radius = platformRadiusFor(TrialMode.DEFENSE, defense);
+        buildPlatform(arena, origin, TrialMode.DEFENSE, radius);
+        BlockPos towerPos = origin.offset(0, 1, 0);
+        if (!(arena.getBlockState(towerPos).getBlock() instanceof com.trialportal.block.WardPylonBlock))
+        {
+            arena.setBlock(towerPos, ModBlocks.WARD_PYLON.get().defaultBlockState(), Block.UPDATE_ALL);
+        }
+        if (!(arena.getBlockEntity(towerPos) instanceof com.trialportal.block.entity.WardPylonBlockEntity tower))
+        {
+            // 方块实体没出来（被别的 mod 顶掉 BE 类型之类）：宁可不开局，也不要一座读不到血的塔
+            releaseCellAt(arena, cell, manager.reachOf(player.getUUID()), manager.builtBoxOf(player.getUUID()));
+            TrialFeedback.failure(player, "塔方块没有方块实体，开不了局（详见服务端日志）");
+            LOGGER.error("[trial_portal] {} 处放塔后方块实体缺失，守塔开局中止", towerPos.toShortString());
+            return false;
+        }
+        // 每次开局都重新灌满血：上一场被打塌的塔在拆台时已经跟着台面一起没了
+        tower.configure(defense.towerHealth, player.getUUID(), defense.id());
+        // 拆台盒子要盖住这圈加宽台面：建多宽就记多宽，否则结界外环留在虚空里、区块也不还
+        manager.recordBuilt(player.getUUID(), 0, new net.minecraft.world.phys.AABB(
+                origin.getX() - radius - 1, origin.getY(), origin.getZ() - radius - 1,
+                origin.getX() + radius + 2, origin.getY() + fenceHeight() + 2, origin.getZ() + radius + 2));
+        sweepCellMobs(arena, cell, manager.reachOf(player.getUUID()), manager.builtBoxOf(player.getUUID()));
+        if (!manager.startDefense(player, defense, origin, cell, arena.dimension(), towerPos))
+        {
+            releaseCell(arena, manager, player.getUUID(), cell);
+            return false;
+        }
+        teleportSafe(arena, player, origin.offset(0, 0, Math.max(2, radius / 2)), 180.0F, 0.0F);
         return true;
     }
 
@@ -465,7 +536,9 @@ public final class ArenaService
             BlockPos[] bounds = cellBounds(pending.cell(), pending.reach(), pending.built());
             setRegionForced(arena, bounds[0], bounds[1], false);
             manager.freeCell(pending.playerId());
-            manager.takeHome(pending.playerId());
+            // 这里刻意不 takeHome：开服清扫跑在 ServerStartedEvent / 下一 tick，玩家登录还要几秒，
+            // 现在把回返点吃掉，等他上线时 rescueStrandedPlayers → returnHome 就只能把人丢到世界出生点。
+            // 回返点交给 returnHome 自己消费（它会 takeHome），留在这期间正是它该起作用的窗口。
         }
     }
 
@@ -504,9 +577,27 @@ public final class ArenaService
      */
     public static void buildPlatform(ServerLevel level, BlockPos origin, @Nullable TrialMode mode)
     {
+        buildPlatform(level, origin, mode, radius());
+    }
+
+    /**
+     * 建台。半径单独传：守塔的结界比默认台面大（{@code ward_radius} 进数据），
+     * 而拆台盒子按真实写过的区域算（见 {@code recordBuilt}），所以建多宽都不会漏拆。
+     */
+    public static void buildPlatform(ServerLevel level, BlockPos origin, @Nullable TrialMode mode, int platformRadius)
+    {
         forceChunks(level, origin);
+        int r = Math.max(1, platformRadius);
+        if (r + 1 > cellHalfFootprint())
+        {
+            // 结界比默认台面宽：多出来的那圈区块也得整场留在加载状态，否则塔会站在没加载的区块里
+            setRegionForced(level, origin.offset(-r - 1, 0, -r - 1), origin.offset(r + 1, 0, r + 1), true);
+        }
+        if (mode == null)
+        {
+            clearLobbyDecor(level, origin, r);
+        }
         BlockState floor = platformBlock();
-        int r = radius();
         for (int dx = -r; dx <= r; dx++)
         {
             for (int dz = -r; dz <= r; dz++)
@@ -540,32 +631,69 @@ public final class ArenaService
         clearTerminals(level, origin, r);
         int gap = Math.max(1, (r - 1) / 3);
         int row = -(r - 1); // 北侧台沿一列：玩家落地时 yaw=180 正好对着它，也不挡中间的打斗区
+        int south = r - 1;
+        // 拱门/塔位的槽距：柱子在各槽 ±2，最外不得超过台沿（r-1）。半径被调小时跟着缩，不往虚空里砌柱子
+        int arch = Math.max(1, Math.min(6, r - 3));
+        int exitSlot = Math.max(1, Math.min(5, r - 4));
         if (mode == null)
         {
-            placeTerminal(level, origin.offset(-3 * gap, 1, row), ModBlocks.CHALLENGE_PORTAL.get().defaultBlockState());
-            placeTerminal(level, origin.offset(-gap, 1, row), ModBlocks.TOWER_PORTAL.get().defaultBlockState());
-            placeTerminal(level, origin.offset(gap, 1, row), ModBlocks.TRIAL_PORTAL.get().defaultBlockState());
-            placeTerminal(level, origin.offset(3 * gap, 1, row), ModBlocks.ARENA_EXIT.get().defaultBlockState());
+            // 大厅布局（㊲ 重排）：北沿三座拱门对称排开——闯关（青饰带）在左、爬塔（紫）居中、试炼（蓝）在右，
+            // 落地正对；南沿正中是守塔之枢（石英塔位），两侧各一座往返门。进去的门朝北，回家与守塔朝南。
+            placeTerminal(level, origin.offset(-arch, 1, row), ModBlocks.CHALLENGE_PORTAL.get().defaultBlockState());
+            placeTerminal(level, origin.offset(0, 1, row), ModBlocks.TOWER_PORTAL.get().defaultBlockState());
+            placeTerminal(level, origin.offset(arch, 1, row), ModBlocks.TRIAL_PORTAL.get().defaultBlockState());
+            placeTerminal(level, origin.offset(-exitSlot, 1, south), ModBlocks.ARENA_EXIT.get().defaultBlockState());
+            placeTerminal(level, origin.offset(exitSlot, 1, south), ModBlocks.ARENA_EXIT.get().defaultBlockState());
+            placeTerminal(level, origin.offset(0, 1, south), ModBlocks.WARD_PYLON.get().defaultBlockState());
+            buildShrine(level, origin, row, south, arch, exitSlot, r); // 大厅：门要像个地方，不是站在裸台上的方块
+        }
+        else if (mode == TrialMode.DEFENSE)
+        {
+            // 守塔的隔间不放大厅那种传送门：被守的塔在台心，北沿只留往返门。
+            // 只补空气位（placeTerminal 的语义），所以重进隔间不会把已有血量池顶掉。
+            placeTerminal(level, origin.offset(0, 1, 0), ModBlocks.WARD_PYLON.get().defaultBlockState());
+            placeTerminal(level, origin.offset(gap, 1, row), ModBlocks.ARENA_EXIT.get().defaultBlockState());
         }
         else
         {
             placeTerminal(level, origin.offset(-gap, 1, row), blockFor(mode));
             placeTerminal(level, origin.offset(gap, 1, row), ModBlocks.ARENA_EXIT.get().defaultBlockState());
         }
-        if (mode == null)
+    }
+
+    /**
+     * 大厅重建前的清场：y1..9 全部抹成空气（y0 地板不动，围栏随后由建台循环补回来）。
+     * <p>
+     * 大厅永不拆台，而布局是会改的——槽位一挪，旧槽位上的门、柱、灯就会和新布局并存，
+     * 老存档升级后第一次进大厅就能看见两套门。隔间不走这里：守塔隔间的塔有血量池，
+     * 重进隔间把它清了等于把正在打的场拆了。
+     */
+    private static void clearLobbyDecor(ServerLevel level, BlockPos origin, int r)
+    {
+        for (int dx = -r; dx <= r; dx++)
         {
-            buildShrine(level, origin, gap, row); // 大厅：三扇玩法门要像个地方，不是一排站在裸台上的方块
+            for (int dz = -r; dz <= r; dz++)
+            {
+                for (int dy = 1; dy <= 9; dy++)
+                {
+                    BlockPos pos = origin.offset(dx, dy, dz);
+                    if (!level.getBlockState(pos).isAir())
+                    {
+                        level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                    }
+                }
+            }
         }
     }
 
     /**
-     * 大厅北侧那座"庙"：每扇玩法门前一对柱子、一道横梁、一块顶棚，门楣上方嵌一盏灯。
+     * 大厅的"门面"：北沿三座拱门（柱身黑色雕纹石 + 各玩法主题色陶瓦饰带，远远分得清哪扇是什么），
+     * 南沿守塔的石英塔位与两座带小拱的往返门，地面一条南北中轴步道接中央徽记，台面四角立灯柱。
      * <p>
-     * 三条硬约束：① 只长在边缘，台面中央必须空着（§9-6 拍板过的场地契约）；② 门前一格不许有实体方块，
-     * 否则玩家点不到门；③ 全部走 {@link Brush} 且是无条件覆写，所以反复建台幂等——大厅永远不拆，
-     * 装饰要是会"越建越厚"就没人替你收拾。
+     * 三条硬约束（延续 #23 的庙）：① 装饰只长在边缘与 y0，台面中央上空必须空着（§9-6 拍板过的场地契约）；
+     * ② 每扇门前一格不许有实体方块，否则玩家点不到门；③ 全部走 {@link Brush} 且无条件覆写，反复建台幂等。
      */
-    private static void buildShrine(ServerLevel level, BlockPos origin, int gap, int row)
+    private static void buildShrine(ServerLevel level, BlockPos origin, int row, int south, int arch, int exitSlot, int r)
     {
         Brush brush = new Brush(level);
         BlockState column = Blocks.CHISELED_POLISHED_BLACKSTONE.defaultBlockState();
@@ -573,13 +701,23 @@ public final class ArenaService
         BlockState roof = Blocks.CRACKED_POLISHED_BLACKSTONE_BRICKS.defaultBlockState();
         BlockState inlay = Blocks.POLISHED_BLACKSTONE.defaultBlockState();
         BlockState lamp = RoomBuilder.defaultLight();
-        for (int slot = -1; slot <= 1; slot++)
+        // 饰带颜色与门方块同族（ModBlocks 的 MapColor）：闯关青、爬塔紫、试炼蓝。
+        // 用混凝土而不是陶瓦——真机看过，陶瓦在蘑菇灯的暖光下会发灰发粉，三拱远看像同一种颜色
+        BlockState[] accents = {Blocks.CYAN_CONCRETE.defaultBlockState(),
+                Blocks.PURPLE_CONCRETE.defaultBlockState(), Blocks.BLUE_CONCRETE.defaultBlockState()};
+        int[] slots = {-arch, 0, arch};
+        for (int i = 0; i < slots.length; i++)
         {
-            int dx = -gap + slot * 2 * gap; // 三扇玩法门在 -3g / -g / +g，+3g 那格是返回终端
-            for (int dy = 1; dy <= 5; dy++)
+            int dx = slots[i];
+            for (int dy = 1; dy <= 3; dy++)
             {
                 brush.put(origin.offset(dx - 2, dy, row), column);
                 brush.put(origin.offset(dx + 2, dy, row), column);
+            }
+            for (int dy = 4; dy <= 5; dy++)
+            {
+                brush.put(origin.offset(dx - 2, dy, row), accents[i]);
+                brush.put(origin.offset(dx + 2, dy, row), accents[i]);
             }
             for (int step = -2; step <= 2; step++)
             {
@@ -588,13 +726,81 @@ public final class ArenaService
                 brush.put(origin.offset(dx + step, 7, row + 1), roof);
                 brush.put(origin.offset(dx + step, 0, row + 1), inlay);
             }
-            brush.put(origin.offset(dx, 1, row + 1), Blocks.AIR.defaultBlockState()); // 门前一格必须站得进人
             if (lamp != null)
             {
                 brush.put(origin.offset(dx, 4, row), lamp);
             }
         }
+        buildWardCourt(brush, origin, south, exitSlot, lamp);
+        buildLobbyGround(brush, origin, row, south, r);
     }
+
+    /** 南沿的守塔庭院：正中石英塔位（守塔之枢立在这儿，与它自己的石英模型同族），两侧各一座带小拱的往返门。 */
+    private static void buildWardCourt(Brush brush, BlockPos origin, int south, int exitSlot, @Nullable BlockState lamp)
+    {
+        BlockState pillar = Blocks.QUARTZ_PILLAR.defaultBlockState();
+        BlockState chiseled = Blocks.CHISELED_QUARTZ_BLOCK.defaultBlockState();
+        BlockState smooth = Blocks.SMOOTH_QUARTZ.defaultBlockState();
+        for (int dy = 1; dy <= 5; dy++)
+        {
+            brush.put(origin.offset(-2, dy, south), pillar);
+            brush.put(origin.offset(2, dy, south), pillar);
+        }
+        for (int step = -2; step <= 2; step++)
+        {
+            brush.put(origin.offset(step, 6, south), chiseled);
+            brush.put(origin.offset(step, 7, south), smooth);
+        }
+        if (lamp != null)
+        {
+            brush.put(origin.offset(0, 5, south), lamp);
+        }
+        for (int side : new int[] {-1, 1})
+        {
+            int dx = side * exitSlot;
+            for (int dy = 1; dy <= 2; dy++)
+            {
+                brush.put(origin.offset(dx - 2, dy, south), Blocks.POLISHED_BLACKSTONE.defaultBlockState());
+                brush.put(origin.offset(dx + 2, dy, south), Blocks.POLISHED_BLACKSTONE.defaultBlockState());
+            }
+            for (int step = -2; step <= 2; step++)
+            {
+                brush.put(origin.offset(dx + step, 3, south), Blocks.POLISHED_BLACKSTONE.defaultBlockState());
+            }
+        }
+    }
+
+    /**
+     * 地面与灯：南北中轴步道（磨制黑石砖，每四格一枚镶金黑石）接中央徽记，台面四角各立一根灯柱。
+     * 只写 y0 与角柱两格——中央上空保持空。
+     */
+    private static void buildLobbyGround(Brush brush, BlockPos origin, int row, int south, int r)
+    {
+        BlockState brick = Blocks.POLISHED_BLACKSTONE_BRICKS.defaultBlockState();
+        BlockState gold = Blocks.GILDED_BLACKSTONE.defaultBlockState();
+        BlockState medallion = Blocks.CHISELED_POLISHED_BLACKSTONE.defaultBlockState();
+        for (int dz = row + 1; dz <= south - 1; dz++)
+        {
+            brush.put(origin.offset(0, 0, dz), dz % 4 == 0 ? gold : brick);
+        }
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                boolean corner = Math.abs(dx) == 1 && Math.abs(dz) == 1;
+                brush.put(origin.offset(dx, 0, dz), corner ? gold : medallion);
+            }
+        }
+        int cornerPost = Math.max(2, r - 2);
+        for (int sx : new int[] {-cornerPost, cornerPost})
+        {
+            for (int sz : new int[] {-cornerPost, cornerPost})
+            {
+                brush.put(origin.offset(sx, 2, sz), Blocks.LANTERN.defaultBlockState());
+            }
+        }
+    }
+
 
     /** 把平台范围内已经站着的终端（含上一版布局留下的）先抹平。 */
     private static void clearTerminals(ServerLevel level, BlockPos origin, int r)
@@ -623,6 +829,13 @@ public final class ArenaService
      */
     private static boolean isRoomGate(@Nullable TrialMode mode, int dx, int dz, int radius)
     {
+        if (mode == TrialMode.DEFENSE)
+        {
+            // 守塔的结界四面各留一个 3 格缺口：怪要从外面走进来，全封死就是让它们在墙外站着看
+            boolean onRing = Math.abs(dx) == radius || Math.abs(dz) == radius;
+            boolean atMiddle = (dx == 0 && Math.abs(dz) == radius) || (dz == 0 && Math.abs(dx) == radius);
+            return onRing && atMiddle;
+        }
         return mode == TrialMode.TRIAL && dz == radius && Math.abs(dx) <= 1;
     }
 
@@ -737,6 +950,8 @@ public final class ArenaService
             case CHALLENGE -> ModBlocks.CHALLENGE_PORTAL.get().defaultBlockState();
             case TOWER -> ModBlocks.TOWER_PORTAL.get().defaultBlockState();
             case TRIAL -> ModBlocks.TRIAL_PORTAL.get().defaultBlockState();
+            // 守塔不走大厅传送门：它的入口就是那座塔方块本身（切片 2），这里不静默回退成别的门
+            case DEFENSE -> throw new IllegalStateException("守塔入口尚未实现：DEFENSE 没有大厅传送门");
         };
     }
 

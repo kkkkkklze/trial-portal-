@@ -1,9 +1,12 @@
 # Trial Portal（传送门试炼）
 
-Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼（闯关 / 爬塔 / 试炼共用一套框架）。
-三种玩法都跑在自建维度 `trial_portal:arena` 里：右键野外任意一个传送门 → 传进大厅平台 → 点大厅里的对应终端选玩法 →
-在**属于你自己的隔间**里打；结算/放弃/中止会把你送回进入前的位置。
-玩法语义规格来自原作者提供的设计文档（收录在 `docs/`），本机事实、验证结果与差异台账见 [docs/开发文档.md](docs/开发文档.md)。
+Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼（闯关 / 爬塔 / 试炼共用一套框架），
+外加第四种玩法**守塔**（`defenses/*.json`：怪从结界外缘一波波压进来，塔血归零或玩家死亡都算输）。
+内容都跑在自建维度 `trial_portal:arena` 里。进出只有一条通道：**星罗·试炼往返门**（`arena_exit`，
+8 哭泣黑曜石 + 末影珍珠合出来），野外点它传进大厅平台，大厅/隔间里点它回进入前的位置并结算。
+进了大厅再点北沿三座拱门选玩法（闯关 / 爬塔 / 试炼），守塔点南沿正中那座守塔之枢；那三座门与塔本身
+按裁定**没有生存配方**，只能从创造栏或 `/give` 拿到。玩法语义规格来自原作者提供的设计文档（收录在 `docs/`），
+本机事实、验证结果与差异台账见 [docs/开发文档.md](docs/开发文档.md)。
 内容全在数据包 JSON 里：改出什么怪、给什么奖励、BOSS 克制什么都不用重新编译。
 
 ## 模组身份
@@ -32,30 +35,35 @@ Minecraft 1.20.1 / MinecraftForge 模组工程：数据驱动的传送门试炼�
 > 这份表和设计文档里的表**不一致**（对方那台机器是 ForgeGradle 6 + Forge 47.4.10 + Gradle 8.8）。
 > 已按「工程文件以本地为准」采用本机构的 MDG 工具链，差异逐条列在 `docs/开发文档.md` §2。
 
-## 当前状态（2026-09-25 实测）
+## 当前状态（2026-10-10 实测）
 
 | 命令 | 结果 |
 | --- | --- |
-| `./gradlew selfTest -PselfTest` | 绿，**43 条断言全过**；这道门不认退出码，只认 `run/selftest-result.txt` 里的 `PASS/FAIL` |
-| `./gradlew build` | 绿。含 `> Task :checkTrialData`（8 条词条 + 3 份试炼 + 5 间房 + 2 份副本 + 3 条配方全通过）。产物 `build/libs/trial_portal-1.0.0.jar`（约 229 KB，68 个 class） |
-| `./gradlew checkTrialData` | 绿；两次反向测试（写坏 JSON）都以非 0 退出并点名条目 |
-| `./gradlew selfTest -PselfTest`（= runGameTestServer + 标记对账） | 绿，**198 条运行期断言全通过**（数据包链路、BOSS 层取 mobs[0]、层段词条池生效、免疫真的取消伤害、属性修饰符随实体存档、NBT 往返一致、方块/物品注册、`/tei trial list` 真执行） |
+| `./gradlew build` | 绿。含 `> Task :checkTrialData`（8 条词条 + 3 份试炼 + 5 间房 + 2 份副本 + 1 份守塔 + 1 条配方 + 4 份掉落表全通过，未知字段一律算错）。产物 `build/libs/trial_portal-1.0.0.jar`（299,220 字节，79 个 class + 43 份 JSON，sha256 前缀 `fd727fc5a3`） |
+| `./gradlew checkTrialData` | 绿；反向测试（写坏 JSON / 写错 id / 留空目录）都以非 0 退出并点名条目 |
+| `./gradlew selfTest -PselfTest`（= runGameTestServer + 标记对账） | 绿，**344 条运行期断言全通过**（数据包链路、BOSS 层取 mobs[0]、层段词条池生效、免疫真的取消伤害、属性修饰符随实体存档、NBT 往返一致、方块/物品注册、`/tei trial list` 真执行、房间几何与走廊连通、隔间记账与拆场、门方块掉得出自己、**配方两头对账（玩法门一条不许有 + 通道恰好一条）与往返门方向**、守塔的塔与结界场地、守塔波次阶梯与四条分支裁决、拆塔 goal 的扣血对账与双目标让路、创造配置口的回滚与注册表核对、大厅四门布局与残留清理）。这道门不认退出码，只认 `run/selftest-result.txt` 里的 `PASS/FAIL` |
 | `./gradlew runGameTestServer` | 绿，服务端完整启动 + `已加载 3 份 试炼 定义 / 8 份 BOSS 词条 定义`，不需要 EULA |
 | `./gradlew runData` | 绿，但**不算加载验证**（见下） |
 | `runClient` + playtest-bridge | 绿：真客户端跑完「右键开局 → 波次推进 → 潜行结算发奖（`/clear` 数到 5 件铁锭）→ 死亡转存 → bind 换爬塔 → 续关第 13 层 → BOSS 三词条 79.2 血」 |
 | `runServer` | 未跑（要你自己同意 EULA） |
 
-全工程 35 个 Java 类 / 9,193 行 + 1 个离线校验工具类；数据包 3 份试炼 + 8 条词条 + 5 间房 + 2 份副本 + 3 条配方 + 3 份掉落表。
+全工程 43 个 .java / 12,595 行 + 1 个离线校验工具类（877 行，不打进 jar）；JSON 43 份＝数据包 26（3 试炼 +
+8 词条 + 5 间房 + 2 副本 + 1 守塔 + 1 配方 + 4 掉落表 + 维度与维度类型 2）+ 资源 17（blockstate 5 +
+block model 5 + item model 5 + lang 2）。
 **还没有**：客户端信息面板、真正的可穿越传送门、组队、原版 GameTest（缺结构模板，走 `-PselfTest` 通道）。
-**当前卡住的一环**：`run/eula.txt` 不在 `run/` 里，客户端起不来 ⇒ 真机截图那类判据暂时补不上（不会替你点同意 EULA）。
+**当前卡住的一环**：`run/eula.txt` 不在 `run/` 里，本工程自带的客户端起不来 ⇒ 需要真机在场的那类判据走
+星罗棋布实例 + playtest-bridge（`docs/开发文档.md` §3；换 jar 要先把那个实例关掉），不会替你点同意 EULA。
 
 ## 常用命令
 
 ```bash
 ./gradlew build              # 编译打包 + checkTrialData 数据闸门（Git Bash；CMD/PowerShell 用 gradlew.bat）
 ./gradlew checkTrialData     # 只校验 data/ 下的试炼与词条 JSON，不开游戏
-./gradlew runGameTestServer -PselfTest   # 加载 + 32 条运行期断言（无玩家能跑的那部分），不需要 EULA
+./gradlew selfTest -PselfTest        # 加载 + 全部运行期断言，并强制核对 run/selftest-result.txt 的 PASS/FAIL
+./gradlew runGameTestServer -PselfTest   # 同上但不回读标记（自测红时退出码可能仍是 0，别用它当验收）
+./gradlew runGameTestServer -PmobCensus  # 顺带把注册表里每种可刷怪的真实血量/护甲/攻击力写成 run/mob-census.tsv
 ./gradlew runGameTestServer  # 只验加载与数据包链路
+py tools/census_to_pack.py --census run/mob-census.tsv --out build/nw-ladder  # 按血量分档生成递进难度 datapack
 ./gradlew runClient          # 带模组启动客户端（图形窗口）
 ./gradlew runData            # 数据生成，输出到 src/generated/resources/
 ./gradlew runServer          # 服务端（--nogui，需先在 run/eula.txt 同意 EULA）

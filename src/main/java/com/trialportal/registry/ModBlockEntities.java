@@ -22,4 +22,9 @@ public final class ModBlockEntities
                     ModBlocks.CHALLENGE_PORTAL.get(),
                     ModBlocks.TOWER_PORTAL.get(),
                     ModBlocks.TRIAL_PORTAL.get()).build(null));
+
+    public static final RegistryObject<BlockEntityType<com.trialportal.block.entity.WardPylonBlockEntity>> WARD_PYLON =
+            BLOCK_ENTITIES.register("ward_pylon", () -> BlockEntityType.Builder.of(
+                    com.trialportal.block.entity.WardPylonBlockEntity::new,
+                    ModBlocks.WARD_PYLON.get()).build(null));
 }

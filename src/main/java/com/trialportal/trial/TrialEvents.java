@@ -41,6 +41,19 @@ public final class TrialEvents
     public static void onServerStarted(ServerStartedEvent event)
     {
         ArenaService.sweepOrphanCells(event.getServer());
+        // -Dtrial_portal.mobCensus=true 时顺手出一份注册生物普查（给整合包配内容用的取数通道）
+        MobCensus.runIfRequested(event.getServer());
+    }
+
+    /**
+     * 客户端进世界时看 {@code mob-census.request} 标记。
+     * 走这条路是因为测试用的整合包常在别人的服务端上玩，玩家拿不到 OP，
+     * 用指令通道就得改服务端；标记文件只落在客户端自己的游戏目录里。
+     */
+    @SubscribeEvent
+    public static void onLevelLoad(net.minecraftforge.event.level.LevelEvent.Load event)
+    {
+        MobCensus.respondToRequest(event.getLevel());
     }
 
     @SubscribeEvent
@@ -82,5 +95,39 @@ public final class TrialEvents
             event.setCanceled(true);
             TrialFeedback.actionbar(player, "试炼场地里不能放置方块");
         }
+    }
+
+    /**
+     * 手里拿着可放置方块时，右键自家功能方块必须仍然生效。
+     * <p>
+     * 原版的顺序是"先把手里的物品对目标点用一次"（{@code Item#useOn} 才会去放方块），
+     * 放置被上面那条禁令取消后，这一下就被算成"已经消费掉了"，{@code Block#use} 根本轮不到执行——
+     * 玩家看到的是"我点了守塔之枢，什么也没发生"（真机撞到：手里拿着别的 mod 的战利品方块时点不动塔，
+     * 换成指南针之类非方块物品就正常）。Forge 的 {@code PlayerInteractEvent.RightClickBlock} 正是为此
+     * 提供两个独立开关（javadoc：本事件控制 {@code onItemUseFirst}/{@code Block#use}/{@code Item#useOn}
+     * 谁被调用；取消整个事件则三者都不调用），所以对功能方块只拒"用手里的物品"、放行"用这个方块"。
+     * 两侧都要设，客户端服务端不一致会不同步。
+     */
+    @SubscribeEvent
+    public static void onRightClickBlock(net.minecraftforge.event.entity.player.PlayerInteractEvent.RightClickBlock event)
+    {
+        net.minecraft.world.level.Level level = event.getLevel();
+        if (!ArenaService.isArena(level.dimension()))
+        {
+            return;
+        }
+        if (keepsBlockUse(level.getBlockState(event.getPos())))
+        {
+            event.setUseItem(net.minecraftforge.event.entity.player.PlayerInteractEvent.Result.DENY);
+        }
+    }
+
+    /** 哪些方块"宁可不让手里的物品出手，也要把右键留给方块自己"——只有自家三种功能终端。 */
+    static boolean keepsBlockUse(net.minecraft.world.level.block.state.BlockState state)
+    {
+        net.minecraft.world.level.block.Block block = state.getBlock();
+        return block instanceof com.trialportal.block.TrialPortalBlock
+                || block instanceof com.trialportal.block.ArenaExitBlock
+                || block instanceof com.trialportal.block.WardPylonBlock;
     }
 }

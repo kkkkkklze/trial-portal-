@@ -89,10 +89,11 @@ public class TrialPortalBlock extends BaseEntityBlock implements SneakInteractBl
 
         if (session != null)
         {
-            TrialDefinition own = TrialLibrary.get(session.definitionId);
-            if (own != null && own.mode != this.mode)
+            // 玩法看会话自己钉的那个：守塔/副本的内容不在 trials/ 里，查不到定义不等于"可以随便串门"
+            if (session.modeOf(TrialLibrary.get(session.definitionId)) != this.mode)
             {
-                TrialFeedback.failure(serverPlayer, "你当前那一场是「" + own.displayName + "」，先用对应的门结算");
+                TrialFeedback.failure(serverPlayer, "你当前那一场是「" + session.displayName()
+                        + "」，先用对应的门结算");
                 return InteractionResult.CONSUME;
             }
             manager.onPortalUse(serverPlayer, sneaking);

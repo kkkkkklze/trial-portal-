@@ -14,6 +14,8 @@ import com.trialportal.registry.ModBlocks;
 import com.trialportal.registry.ModCreativeTabs;
 import com.trialportal.registry.ModItems;
 import com.trialportal.trial.ChallengeDefinition;
+import com.trialportal.trial.DefenseDefinition;
+import com.trialportal.trial.DefenseLibrary;
 import com.trialportal.trial.ChallengeLibrary;
 import com.trialportal.trial.TrialDefinition;
 import com.trialportal.trial.TrialLibrary;
@@ -67,6 +69,8 @@ public class TrialPortal
                 (id, room) -> room.resolve(id), RoomLibrary::replace));
         event.addListener(new JsonReloadListener<>("challenges", ChallengeDefinition.class, "资源副本",
                 (id, challenge) -> challenge.resolve(id), ChallengeLibrary::replace));
+        event.addListener(new JsonReloadListener<>("defenses", DefenseDefinition.class, "守塔",
+                (id, defense) -> defense.resolve(id), DefenseLibrary::replace));
     }
 
     private void onRegisterCommands(RegisterCommandsEvent event)

@@ -58,12 +58,17 @@ public class TrialManager extends SavedData
     private static final String TAG_REACH = "arena_reach";
     private static final String TAG_BUILT = "arena_built";
     private static final String TAG_HOMES = "arena_homes";
+    /**
+     * 拆塔 goal 的优先级。原版的乱走（{@code RandomStrollGoal}）在 8、看玩家在 2，
+     * 取 3 是为了压过乱走又不抢"挨打回身"那条仇恨链——改这个数字前先看 {@link #assignDefenseFocus} 的注释。
+     */
+    private static final int TOWER_GOAL_PRIORITY = 3;
 
     public enum Outcome
     {
         /** 主动结算或打完：发奖，爬塔记层 */
         SETTLED,
-        /** 走出场地（点返回终端 / 越界离开）：已攒的奖励照发，但不算通关、不记塔层 */
+        /** 走出场地（点往返门 / 越界离开）：已攒的奖励照发，但不算通关、不记塔层 */
         LEFT,
         /** 管理员中止 / 定义丢失：作废累计奖励 */
         ABANDONED
@@ -364,6 +369,12 @@ public class TrialManager extends SavedData
         return home;
     }
 
+    /** 回返点还在不在。开服清扫那条路必须"还在"——人被接回来时靠它才不回世界出生点。 */
+    public boolean hasHome(UUID playerId)
+    {
+        return this.arenaHomes.containsKey(playerId);
+    }
+
     /** 进维度前站在哪儿、要送回哪儿。 */
     public record HomePos(ResourceKey<Level> dimension, double x, double y, double z, float yaw, float pitch)
     {
@@ -498,10 +509,12 @@ public class TrialManager extends SavedData
         if (definition == null)
         {
             // 副本会话的定义本来就不在 trials/ 里（它的 definitionId 是 challenges/ 的 id），
-            // 那条路没有"下一波"要点，不能报成"试炼已被移除"。
+            // 那条路没有"下一波"要点，不能报成"试炼已被移除"。守塔的在 defenses/，同理。
             TrialFeedback.failure(player, session.challengeId != null
-                    ? "副本不用继续下一波：时限到自动结算，随时点返回终端离场"
-                    : "这份试炼已从数据包里移除，无法继续");
+                    ? "副本不用继续下一波：时限到自动结算，随时点往返门离场"
+                    : session.defenseId != null
+                            ? "守塔不用点传送门：波次自己往前走，塔血归零或你死亡即判负"
+                            : "这份试炼已从数据包里移除，无法继续");
             return;
         }
         switch (session.phase)
@@ -564,6 +577,8 @@ public class TrialManager extends SavedData
             case CHALLENGE -> TrialConfig.CHALLENGE_DEATH_CLEARS_PENDING.get();
             case TOWER -> TrialConfig.TOWER_DEATH_CLEARS_PENDING.get();
             case TRIAL -> TrialConfig.TRIAL_DEATH_CLEARS_PENDING.get();
+            // 守塔：死亡即判负（§9 第 11 条②），判负就没有"下一场接着用"这回事，攒的奖随之作废
+            case DEFENSE -> true;
         };
         if (!clearsPending && !session.pending.isEmpty())
         {
@@ -579,23 +594,22 @@ public class TrialManager extends SavedData
         {
             clearMobs(player.server.getLevel(session.dimension), session);
         }
-        TrialFeedback.announce(player, "试炼失败",
-                clearsPending ? "累计奖励已清空" : "累计奖励留到下一场",
-                "[试炼] 你死了 · " + sessionLabel(session, definition));
+        if (session.mode == TrialMode.DEFENSE)
+        {
+            // 守塔的失败原因有两支，各说各的：塔破与人死不能被听成同一句，玩家得知道是哪儿没守住
+            TrialFeedback.announce(player, "守塔失败 · 第 " + session.waveNumber() + " 波",
+                    "你死了，塔没人守了（已攒奖励作废）",
+                    "[守塔] 玩家死亡，本场判负");
+        }
+        else
+        {
+            TrialFeedback.announce(player, "试炼失败",
+                    clearsPending ? "累计奖励已清空" : "累计奖励留到下一场",
+                    "[试炼] 你死了 · " + session.displayName());
+        }
         // 死亡由原版重生流程送玩家回去，这里只拆隔间、清 cell 记录（进深从记账里读）
         com.trialportal.arena.ArenaService.releaseCell(
                 com.trialportal.arena.ArenaService.level(player.server), this, player.getUUID(), session.cell);
-    }
-
-    /** 播报用的名字：trials/ 里查得到就用它；副本会话的定义在 challenges/，别拿副本 id 去 trials/ 里找。 */
-    private static String sessionLabel(TrialSession session, @Nullable TrialDefinition definition)
-    {
-        if (definition != null)
-        {
-            return definition.displayName;
-        }
-        ChallengeDefinition challenge = session.challengeId == null ? null : ChallengeLibrary.get(session.challengeId);
-        return challenge != null ? challenge.displayNameOrDefault() : session.definitionId;
     }
 
     private void onTowerDeath(ServerPlayer player, TrialSession session)
@@ -651,6 +665,11 @@ public class TrialManager extends SavedData
         if (session.challengeId != null)
         {
             stepDungeon(server, player, session, interval);
+            return;
+        }
+        if (session.defenseId != null)
+        {
+            stepDefense(server, player, session, interval);
             return;
         }
         if (definition == null)
@@ -769,6 +788,307 @@ public class TrialManager extends SavedData
      * 开一局资源副本：不计波次，时限内怪持续补到上限，杀一只攒一份奖，出去统一结算。
      * 隔间分配、离场、拆台这些与波次玩法完全共用，只有玩法循环不同。
      */
+    /**
+     * 开一局守塔（DEFENSE 玩法）。与副本同一条隔间链路，只是内容是 {@code defenses/}，
+     * 并且场地按 {@code ward_radius} 加宽、台心立一座塔。
+     */
+    public boolean startDefense(ServerPlayer player, DefenseDefinition defense, BlockPos origin, int cell,
+                                ResourceKey<Level> dimension, BlockPos towerPos)
+    {
+        if (this.sessions.containsKey(player.getUUID()))
+        {
+            TrialFeedback.failure(player, "你已经有一场试炼在进行中，先用往返门结算");
+            return false;
+        }
+        TrialSession session = new TrialSession(player.getUUID(), player.getScoreboardName(), defense.id(),
+                dimension, origin);
+        session.cell = cell;
+        session.mode = TrialMode.DEFENSE;
+        session.defenseId = defense.id();
+        session.towerPos = towerPos;
+        // 这一场用的是副本：/tei defense 改的必须是它，而不是数据包里那份公共的
+        session.liveDefense = defense.copy();
+        session.seed = player.serverLevel().getRandom().nextLong();
+        ServerLevel level = player.server.getLevel(dimension);
+        if (level == null || !beginDefenseWave(level, player, session, session.liveDefense))
+        {
+            LOGGER.warn("[trial_portal] 守塔 {} 的第 1 波一只怪都没刷出来，不开这一局", defense.id());
+            return false;
+        }
+        this.sessions.put(player.getUUID(), session);
+        this.setDirty();
+        TrialFeedback.title(player, "守塔 · " + defense.displayNameOrDefault(),
+                "共 " + defense.finiteWaveCount() + " 波：塔血归零或你死亡都算输");
+        return true;
+    }
+
+    /**
+     * 守塔一轮的裁决——只读状态、不碰世界，所以四条分支能在无头门里逐一走到。
+     * <p>
+     * 顺序里有两处会被人改错的地方，都钉住了：塔破要排在「本波清空」之前（最后一只怪死在塔归零之后
+     * 的那同一 tick，这场算输不算赢）；场上还有怪时不许进间歇（否则波次会叠着刷）。
+     */
+    enum DefenseStep
+    {
+        /** 本波还在打 */
+        FIGHTING,
+        /** 间歇倒计时中 */
+        COUNTDOWN,
+        /** 本波清空，还有下一波 */
+        WAVE_CLEARED,
+        /** 最后一波也清空了：守住 */
+        WON,
+        /** 塔血归零 */
+        LOST_TOWER
+    }
+
+    static DefenseStep nextDefenseStep(TrialSession session, DefenseDefinition defense, boolean towerDestroyed)
+    {
+        if (towerDestroyed)
+        {
+            return DefenseStep.LOST_TOWER;
+        }
+        if (!session.aliveMobs.isEmpty())
+        {
+            return DefenseStep.FIGHTING;
+        }
+        if (session.phase == TrialSession.Phase.INTERMISSION)
+        {
+            return DefenseStep.COUNTDOWN;
+        }
+        return defense.waveFor(session.waveIndex + 1) == null ? DefenseStep.WON : DefenseStep.WAVE_CLEARED;
+    }
+
+    /**
+     * 守塔的波次自己往前走，塔血归零即判负（§9 第 11 条①）。
+     * 范围外判定与副本共用一条（{@code stillInsideOrEnded}）；玩家死亡那条在 {@code onPlayerDeath} 里报因。
+     */
+    private void stepDefense(MinecraftServer server, ServerPlayer player, TrialSession session, int interval)
+    {
+        DefenseDefinition loaded = DefenseLibrary.get(session.defenseId);
+        if (loaded == null)
+        {
+            end(player, session, null, Outcome.ABANDONED);
+            TrialFeedback.failure(player, "这份守塔定义已被移除，本场中止");
+            return;
+        }
+        // 参数看这一场自己的那份（可能被 /tei defense 改过），存在性看库里的原件：
+        // 分开是因为"数据包被 reload 掉了"必须中止，而"这一场调过波次"不该被当成中止。
+        DefenseDefinition defense = session.liveDefense == null ? loaded : session.liveDefense;
+        ServerLevel level = server.getLevel(session.dimension);
+        if (level == null || session.towerPos == null || !level.isLoaded(session.towerPos))
+        {
+            return; // 塔所在区块没加载，别把"读不到"当成"塔没了"
+        }
+        if (!stillInsideOrEnded(player, session, null, interval))
+        {
+            return;
+        }
+        pruneDeadMobs(level, session);
+        String status = "守塔 第 " + session.waveNumber() + " 波 · 塔血 " + towerStatusAt(level, session.towerPos)
+                + " · 场上 " + session.aliveMobs.size() + " 只";
+        switch (nextDefenseStep(session, defense, isTowerDown(level, session.towerPos)))
+        {
+            case FIGHTING -> TrialFeedback.actionbar(player, status);
+            case LOST_TOWER ->
+            {
+                end(player, session, null, Outcome.ABANDONED);
+                TrialFeedback.announce(player, "守塔失败 · " + defense.displayNameOrDefault(),
+                        "第 " + session.waveNumber() + " 波，塔血归零",
+                        "[守塔] 塔被摧毁，本场判负（已攒奖励作废）");
+            }
+            case COUNTDOWN ->
+            {
+                session.intermissionTicksLeft -= interval;
+                if (session.intermissionTicksLeft <= 0)
+                {
+                    session.waveIndex++;
+                    if (!beginDefenseWave(level, player, session, defense))
+                    {
+                        end(player, session, null, Outcome.ABANDONED);
+                        TrialFeedback.failure(player, "第 " + session.waveNumber() + " 波取不到内容，本场中止");
+                    }
+                }
+                else
+                {
+                    TrialFeedback.actionbar(player, status + " · 下一波 "
+                            + (session.intermissionTicksLeft / 20 + 1) + " 秒后压进来");
+                }
+            }
+            case WAVE_CLEARED ->
+            {
+                addWaveRewards(session, defense.waveFor(session.waveIndex));
+                session.phase = TrialSession.Phase.INTERMISSION;
+                session.intermissionTicksLeft = defense.intermissionTicksFor(session.waveIndex);
+                TrialFeedback.announce(player, "第 " + session.waveNumber() + " 波守住",
+                        "歇 " + (session.intermissionTicksLeft / 20 + 1) + " 秒，下一波从结界外缘进来",
+                        "[守塔] 第 " + session.waveNumber() + " 波清空，本波奖励已攒入待结算");
+            }
+            case WON ->
+            {
+                addWaveRewards(session, defense.waveFor(session.waveIndex));
+                session.addReward(defense.rewards);
+                // 塔血要在拆台之前读：end() 会把人送走并拆掉隔间，之后再拿方块实体就只剩"读不到"
+                String remaining = towerStatusAt(level, session.towerPos);
+                end(player, session, null, Outcome.SETTLED);
+                TrialFeedback.announce(player, "守塔成功 · " + defense.displayNameOrDefault(),
+                        defense.finiteWaveCount() + " 波全守住，塔血 " + remaining,
+                        "[守塔] 守住了，奖励已发放");
+            }
+        }
+    }
+
+    private static void addWaveRewards(TrialSession session, @Nullable TrialDefinition.WaveContent content)
+    {
+        if (content != null)
+        {
+            session.addReward(content.rewards);
+        }
+    }
+
+    /** 塔是不是已经归零。拿不到方块实体时算「没归零」：读不到不等于被打掉。 */
+    private static boolean isTowerDown(ServerLevel level, BlockPos towerPos)
+    {
+        return level.getBlockEntity(towerPos) instanceof com.trialportal.block.entity.WardPylonBlockEntity pylon
+                && pylon.destroyed();
+    }
+
+    /** 给玩家看的塔血读数：{@code 剩/总}。拿不到方块实体就说人话，不编一个数。 */
+    private static String towerStatusAt(ServerLevel level, BlockPos towerPos)
+    {
+        return level.getBlockEntity(towerPos) instanceof com.trialportal.block.entity.WardPylonBlockEntity pylon
+                ? String.format(Locale.ROOT, "%.0f/%.0f", pylon.towerHealth(), pylon.towerMax()) : "读不到";
+    }
+
+    /**
+     * 起第 {@code session.waveIndex} 波：怪铺在结界外缘那一圈，不再挤在台心。
+     * 一只都没刷出来时返回 false——这一局不该继续，否则下一 tick 就会「场上没怪」直接判通关。
+     */
+    private boolean beginDefenseWave(ServerLevel level, ServerPlayer owner, TrialSession session,
+                                     DefenseDefinition defense)
+    {
+        TrialDefinition.WaveContent content = defense.waveFor(session.waveIndex);
+        if (content == null)
+        {
+            LOGGER.warn("[trial_portal] 守塔 {} 取不到第 {} 波内容", defense.id(), session.waveNumber());
+            return false;
+        }
+        session.aliveMobs.clear();
+        session.bossAffixes.clear();
+        session.phase = TrialSession.Phase.IN_WAVE;
+        int spawned = 0;
+        for (TrialDefinition.MobEntry entry : content.mobs)
+        {
+            int wanted = Math.max(1, entry.count);
+            for (int i = 0; i < wanted; i++)
+            {
+                Mob mob = createMobAt(level, entry,
+                        wardEdgePosition(level, session.origin, defense.wardRadius, level.getRandom()));
+                if (mob == null)
+                {
+                    continue;
+                }
+                MobStrengths.apply(mob, MobStrength.combined(content.strength, entry.strength));
+                if (entry.boss)
+                {
+                    // 头目固定打人：让它去啃塔就把这场最难的部分变没了
+                    prepareBoss(mob, defense.displayNameOrDefault() + " · 头目", owner);
+                    applyBossAffixes(level, mob, content.affixPool, TrialConfig.TRIAL_BOSS_AFFIX_COUNT.get(),
+                            owner, session);
+                }
+                else
+                {
+                    assignDefenseFocus(mob, defense, session, owner, level.getRandom());
+                }
+                mob.setPersistenceRequired();
+                if (level.addFreshEntity(mob))
+                {
+                    session.aliveMobs.add(mob.getUUID());
+                    spawned++;
+                }
+            }
+        }
+        if (spawned == 0)
+        {
+            return false;
+        }
+        TrialFeedback.title(owner, content.title.replace("%s", owner.getScoreboardName()), null);
+        return true;
+    }
+
+    /**
+     * 给一只守塔怪挑目标：{@code tower_focus_share} 那部分去啃塔，其余锁玩家——这就是"怪有两个目标"的落点。
+     * <p>
+     * 啃塔的那只开局**不**锁玩家（否则它先跑向人，塔血一动不动）；玩家打它之后由原版
+     * {@code HurtByTargetGoal} 回身，这正好是想要的"两个目标会切换"。
+     * 拿不到塔位（异常场次）就退回打人，不留一只既没目标也没路径的怪。
+     */
+    static DefenseFocus assignDefenseFocus(Mob mob, DefenseDefinition defense, TrialSession session,
+                                           @Nullable ServerPlayer owner, RandomSource random)
+    {
+        if (DefenseFocus.forRoll(random.nextDouble(), defense.towerFocusShare) == DefenseFocus.TOWER
+                && session.towerPos != null)
+        {
+            mob.goalSelector.addGoal(TOWER_GOAL_PRIORITY, new com.trialportal.arena.TowerAssaultGoal(mob,
+                    session.towerPos, defense.towerDamagePerHit, defense.towerHitIntervalTicks,
+                    defense.wardRadius + 4.0D));
+            return DefenseFocus.TOWER;
+        }
+        if (mob instanceof Enemy && owner != null)
+        {
+            mob.setTarget(owner);
+        }
+        return DefenseFocus.PLAYER;
+    }
+
+    /**
+     * 结界外缘的落点：在半径 0.55~0.9 倍的环带里取角度，再往下扫找落脚点。
+     * 不取整圆是因为围栏就压在 {@code ward_radius} 那一圈上——落点越过围栏等于把怪丢到场外，
+     * 场外没有强制加载的区块，怪会卡在未加载区里让这一波永远清不完。
+     */
+    static Vec3 wardEdgePosition(ServerLevel level, BlockPos origin, double radiusValue, RandomSource random)
+    {
+        double ring = Math.max(4.0D, radiusValue);
+        for (int attempt = 0; attempt < 16; attempt++)
+        {
+            double angle = random.nextDouble() * Math.PI * 2.0D;
+            Vec3 point = scanRingColumn(level, origin, ring, ring * (0.55D + 0.35D * random.nextDouble()), angle);
+            if (point != null)
+            {
+                return point;
+            }
+        }
+        for (int step = 0; step < 8; step++)
+        {
+            Vec3 point = scanRingColumn(level, origin, ring, ring * 0.7D, step * Math.PI / 4.0D);
+            if (point != null)
+            {
+                return point;
+            }
+        }
+        LOGGER.warn("[trial_portal] 结界环带（半径 {}）扫不到落脚点，这一只改站在台心东侧", ring);
+        return Vec3.atBottomCenterOf(origin.offset(2, 1, 0));
+    }
+
+    /** 给定角度与距离，在 3~-1 的竖直窗口里找一格「脚下实心、头上两格空」。找不到返回 null。 */
+    @Nullable
+    private static Vec3 scanRingColumn(ServerLevel level, BlockPos origin, double ring, double distance, double angle)
+    {
+        int x = origin.getX() + (int) Math.round(Math.cos(angle) * distance);
+        int z = origin.getZ() + (int) Math.round(Math.sin(angle) * distance);
+        for (int dy = 3; dy >= -1; dy--)
+        {
+            BlockPos candidate = new BlockPos(x, origin.getY() + dy, z);
+            if (level.getBlockState(candidate.below()).isRedstoneConductor(level, candidate.below())
+                    && level.isEmptyBlock(candidate) && level.isEmptyBlock(candidate.above()))
+            {
+                return Vec3.atBottomCenterOf(candidate);
+            }
+        }
+        return null;
+    }
+
+
     public boolean startDungeon(ServerPlayer player, ChallengeDefinition challenge, String difficultyKey,
                                 BlockPos origin, int cell, ResourceKey<Level> dimension)
     {
@@ -805,7 +1125,7 @@ public class TrialManager extends SavedData
         }
         TrialFeedback.title(player, challenge.displayNameOrDefault(),
                 difficulty.displayNameOrDefault(difficultyKey) + " · 时限 " + challenge.durationTicks / 20 + " 秒");
-        TrialFeedback.chat(player, "[副本] 杀一只攒一份奖，出去（点返回终端）就结算");
+        TrialFeedback.chat(player, "[副本] 杀一只攒一份奖，出去（点往返门）就结算");
         return true;
     }
 
@@ -863,9 +1183,11 @@ public class TrialManager extends SavedData
     {
         int room = difficulty.mobCap - session.aliveMobs.size();
         int batch = Math.min(difficulty.spawnBatch, Math.max(0, room));
+        // 按 mobs[].count 展开出来的配比队列轮转：写僵尸×2 + 骷髅×1 就会真的按 2:1 出怪
+        java.util.List<TrialDefinition.MobEntry> plan = difficulty.spawnPlan();
         for (int i = 0; i < batch; i++)
         {
-            TrialDefinition.MobEntry entry = difficulty.mobs.get(session.spawnCursor++ % difficulty.mobs.size());
+            TrialDefinition.MobEntry entry = plan.get(session.spawnCursor++ % plan.size());
             Vec3 position = findSpawnPosition(level, session.origin, difficulty.spawnRadiusOrDefault(),
                     difficulty.spawnHeightOrDefault());
             Mob mob = createMobAt(level, entry, position);
@@ -958,6 +1280,13 @@ public class TrialManager extends SavedData
         RoomDefinition.Layout layout = session.reach > 0 ? room.layoutFor(layoutSeed) : RoomDefinition.Layout.straight();
         int limit = ArenaService.lateralLimit(room.width());
         int lateral = Math.max(-limit, Math.min(limit, layout.lateral));
+        if (lateral != layout.lateral)
+        {
+            // 夹过就要说：管理员把 platform_radius 调小之后，作者配的 lateral 会静默缩水，
+            // 地图悄悄退回老样子，而 JSON 里还写着 6 —— 那是没人看得见的改动态。
+            LOGGER.warn("[trial_portal] 房间 {} 的 layouts lateral={} 超出隔间横向余量，按 {} 建（platform_radius 现在 {}）",
+                    room.id(), layout.lateral, lateral, TrialConfig.ARENA_PLATFORM_RADIUS.get());
+        }
         BlockPos origin = new BlockPos(session.origin.getX() - room.width() / 2 + lateral, ArenaService.FLOOR_Y,
                 session.origin.getZ() + cursor + layout.gap);
         if (session.reach > 0)
@@ -1056,16 +1385,18 @@ public class TrialManager extends SavedData
         return mob;
     }
 
-    /**
-     * BOSS 待遇：血量补满 + 显名 + 锁定玩家。
-     * 词条的实际贴在 {@link #applyBossAffixes}（Slice D），这里只留一个调用点。
-     */
     private void prepareBoss(Mob mob, TrialDefinition definition, ServerPlayer owner)
     {
-        mob.setHealth(mob.getMaxHealth());
         String name = definition.mode == TrialMode.TRIAL && definition.boss != null && definition.boss.name != null
                 ? definition.boss.name.replace("%s", owner.getScoreboardName())
                 : owner.getScoreboardName() + " 的对手";
+        prepareBoss(mob, name, owner);
+    }
+
+    /** 守塔的头目没有 trials/ 那份 boss 配置，名字由调用点给，待遇与试炼的 BOSS 同一条。 */
+    private static void prepareBoss(Mob mob, String name, ServerPlayer owner)
+    {
+        mob.setHealth(mob.getMaxHealth());
         mob.setCustomName(Component.literal(name));
         mob.setCustomNameVisible(true);
         mob.setTarget(owner);
@@ -1091,6 +1422,13 @@ public class TrialManager extends SavedData
                 count = definition.boss.affixCount;
             }
         }
+        applyBossAffixes(level, mob, pool, count, owner, session);
+    }
+
+    /** 贴词条的实际动作。试炼与守塔共用这一份：池子为空就走全量已加载词条，两边同一个口径。 */
+    private void applyBossAffixes(ServerLevel level, Mob mob, @Nullable List<String> pool, int count,
+                                  ServerPlayer owner, TrialSession session)
+    {
         if (count <= 0)
         {
             return;
@@ -1272,7 +1610,7 @@ public class TrialManager extends SavedData
     }
 
     /**
-     * 点返回终端 = 离场并把已攒的奖励结掉。没有会话时只是回家。
+     * 点往返门 = 离场并把已攒的奖励结掉。没有会话时只是回家。
      * 结算与离场再不是两条路：以前点错一下就把整场奖励丢了。
      */
     public void leave(ServerPlayer player)

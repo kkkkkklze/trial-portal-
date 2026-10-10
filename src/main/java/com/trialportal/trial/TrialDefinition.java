@@ -282,7 +282,7 @@ public class TrialDefinition
                     return error;
                 }
             }
-            return null;
+            return checkRewards("wave.rewards", this.rewards);
         }
     }
 
@@ -495,7 +495,7 @@ public class TrialDefinition
                     return error;
                 }
             }
-            return null;
+            return checkRewards("scaling.rewards", this.rewards);
         }
 
         /**
@@ -677,12 +677,32 @@ public class TrialDefinition
                     return "第 " + this.floor + " 层：" + error;
                 }
             }
-            return null;
+            return checkRewards("第 " + this.floor + " 层的 rewards", this.rewards);
         }
     }
 
+    /**
+     * 奖励列表逐个校验。四处都得有份：以前只有 BOSS 那份查，
+     * 于是 {@code waves[].rewards} 与 {@code scaling.floors[].rewards} 里写 count=0 或漏写 item
+     * 都能加载成功，运行期再被 {@code Math.max(1, count)} 静默夹成 1 —— 发出去的东西和作者写的不是同一个。
+     */
+    @Nullable
+    static String checkRewards(String where, List<RewardEntry> rewards)
+    {
+        for (RewardEntry reward : rewards)
+        {
+            String error = reward == null ? "有空条目" : reward.resolve();
+            if (error != null)
+            {
+                return where + "：" + error;
+            }
+        }
+        return null;
+    }
+
     public static class Tier
-    {        @SerializedName("from")
+    {
+        @SerializedName("from")
         public int from;
 
         @SerializedName("to")
@@ -743,15 +763,7 @@ public class TrialDefinition
                     return strengthError;
                 }
             }
-            for (RewardEntry reward : this.rewards)
-            {
-                String error = reward.resolve();
-                if (error != null)
-                {
-                    return "boss 奖励：" + error;
-                }
-            }
-            return null;
+            return checkRewards("boss.rewards", this.rewards);
         }
 
         String displayName(TrialMode mode)

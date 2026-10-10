@@ -97,10 +97,6 @@ public class RoomDefinition
     @SerializedName("spawn_points")
     public int spawnPoints = 6;
 
-    /** 同时可容纳的怪数上限；一波怪多过这个数就换下一间房装不下的部分继续用生成点循环。 */
-    @SerializedName("mob_cap")
-    public int mobCap = 16;
-
     @SerializedName("boss_room")
     public boolean bossRoom;
 
@@ -159,10 +155,6 @@ public class RoomDefinition
         if (this.spawnPoints < 1)
         {
             return "spawn_points 至少 1";
-        }
-        if (this.mobCap < this.spawnPoints)
-        {
-            return "mob_cap（" + this.mobCap + "）不该小于 spawn_points（" + this.spawnPoints + "），否则有生成点永远用不上";
         }
         if (this.spawnPoints > interiorCells(w, d))
         {

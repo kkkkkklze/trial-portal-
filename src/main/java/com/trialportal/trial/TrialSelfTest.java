@@ -1,6 +1,7 @@
 package com.trialportal.trial;
 
 import com.trialportal.TrialPortal;
+import com.trialportal.arena.ArenaService;
 import com.trialportal.arena.RoomDefinition;
 import com.trialportal.arena.RoomLibrary;
 import com.trialportal.block.TrialPortalBlock;
@@ -10,6 +11,7 @@ import com.trialportal.config.TrialConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.NonNullList;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
@@ -25,6 +27,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.entity.monster.Vindicator;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraftforge.event.server.ServerStartedEvent;
@@ -181,7 +184,7 @@ public final class TrialSelfTest
         check(failures, server.getLevel(arenaKey) != null, "试炼场地维度 " + arenaKey.location() + " 已加载");
         check(failures, net.minecraftforge.registries.ForgeRegistries.BLOCKS.getValue(
                         ResourceLocation.fromNamespaceAndPath(TrialPortal.MODID, "arena_exit")) != null,
-                "返回终端方块已注册");
+                "往返门方块已注册");
         int radius = com.trialportal.arena.ArenaService.radius();
         int spacing = com.trialportal.arena.ArenaService.spacing();
         check(failures, spacing >= radius * 2 + 8,
@@ -196,37 +199,53 @@ public final class TrialSelfTest
             int second = countPlatformBlocks(arenaLevel, lobby, radius);
             check(failures, first > 0 && first == second,
                     "平台生成必须幂等：第一次 " + first + " 块，第二次 " + second + " 块");
-            int gap = Math.max(1, (radius - 1) / 3);
+            int gap = Math.max(1, (radius - 1) / 3); // 隔间槽距（隔间布局没动；大厅重排走自己的槽位）
             int row = -(radius - 1);
-            check(failures, arenaLevel.getBlockState(lobby.offset(-3 * gap, 1, row)).getBlock()
+            int south = radius - 1;
+            int arch = Math.max(1, Math.min(6, radius - 3));
+            int exitSlot = Math.max(1, Math.min(5, radius - 4));
+            check(failures, arenaLevel.getBlockState(lobby.offset(-arch, 1, row)).getBlock()
                             instanceof com.trialportal.block.TrialPortalBlock,
-                    "大厅北侧台沿应摆出闯关终端（终端不许占场地中央）");
-            check(failures, arenaLevel.getBlockState(lobby.offset(3 * gap, 1, row)).getBlock()
-                            instanceof com.trialportal.block.ArenaExitBlock,
-                    "大厅北侧台沿应摆出返回终端");
+                    "大厅北沿左位应摆出闯关门（终端不许占场地中央）");
+            check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, row)).getBlock()
+                            instanceof com.trialportal.block.TrialPortalBlock,
+                    "大厅北沿正中应是爬塔门（三拱的中位）");
+            check(failures, arenaLevel.getBlockState(lobby.offset(arch, 1, row)).getBlock()
+                            instanceof com.trialportal.block.TrialPortalBlock,
+                    "大厅北沿右位应摆出试炼门");
+            check(failures, arenaLevel.getBlockState(lobby.offset(-exitSlot, 1, south)).getBlock()
+                            instanceof com.trialportal.block.ArenaExitBlock
+                            && arenaLevel.getBlockState(lobby.offset(exitSlot, 1, south)).getBlock()
+                                    instanceof com.trialportal.block.ArenaExitBlock,
+                    "大厅南沿两侧应各有一座往返门（与守塔之枢同排）");
             check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, 0)).isAir()
                             && arenaLevel.getBlockState(lobby.offset(0, 1, 4)).isAir(),
                     "场地中央不许有功能方块：挡打斗区，也被玩家当成'重复出现的传送门'");
             // 大厅永远不拆台，旧布局/异常留下的终端必须被下一次建台抹平（用户报的"重复出现传送方块"）
             arenaLevel.setBlock(lobby.offset(2, 1, 3),
                     com.trialportal.registry.ModBlocks.TRIAL_PORTAL.get().defaultBlockState(), 3);
+            // 布局重排（㊲）挪过槽位：旧槽位上的装饰（这里自种一根"旧柱"在中央上空）也得跟着清，不能两套并存
+            arenaLevel.setBlock(lobby.offset(0, 1, 4),
+                    net.minecraft.world.level.block.Blocks.CHISELED_POLISHED_BLACKSTONE.defaultBlockState(), 3);
             int before = countTerminals(arenaLevel, lobby, radius);
             com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, lobby, null);
             int after = countTerminals(arenaLevel, lobby, radius);
-            check(failures, before == 5 && after == 4,
-                    "多余终端必须在重建时被抹平：埋一个之后应有 5 个，重建后只剩 4 个（实际 "
+            check(failures, before == 6 && after == 5,
+                    "多余终端必须在重建时被抹平：埋一个之后应有 6 个，重建后只剩 5 个（实际 "
                             + before + " → " + after + "）");
-            // 庙（#23）：门前不许堵、柱子要真立起来、加了装饰之后中央依旧空
+            check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, 4)).isAir(),
+                    "旧布局的残留装饰必须在重建时清掉：中央上空还立着上一版的东西（§9-6 也要求这里空）");
+            // 门面（#23 庙 → ㊲ 重排）：门前不许堵、柱子要真立起来、饰带一拱一色、中央依旧空
             int blocked = 0;
             int columns = 0;
-            for (int slot = -1; slot <= 1; slot++)
+            java.util.Set<String> accentColors = new java.util.LinkedHashSet<>();
+            for (int dx : new int[] {-arch, 0, arch})
             {
-                int dx = -gap + slot * 2 * gap;
                 if (!arenaLevel.getBlockState(lobby.offset(dx, 1, row + 1)).isAir())
                 {
                     blocked++;
                 }
-                for (int dy = 1; dy <= 5; dy++)
+                for (int dy = 1; dy <= 3; dy++)
                 {
                     if (arenaLevel.getBlockState(lobby.offset(dx - 2, dy, row))
                             .is(net.minecraft.world.level.block.Blocks.CHISELED_POLISHED_BLACKSTONE))
@@ -239,10 +258,41 @@ public final class TrialSelfTest
                         columns++;
                     }
                 }
+                for (int dy = 4; dy <= 5; dy++)
+                {
+                    accentColors.add(arenaLevel.getBlockState(lobby.offset(dx - 2, dy, row)).getBlock().getName().getString());
+                }
             }
             check(failures, blocked == 0, "庙把 " + blocked + " 扇门的门前一格堵住了，玩家右键会点不到门");
-            check(failures, columns >= 30,
-                    "大厅庙柱只数到 " + columns + " 格（三对柱子各 5 格，应为 30）——装饰没建出来");
+            check(failures, columns == 18,
+                    "大厅拱门的黑色柱身只数到 " + columns + " 格（三对柱各 3 格 = 18）——装饰没建出来");
+            check(failures, accentColors.size() == 3,
+                    "三座拱门的主题色饰带应各不相同（现在只有 " + accentColors.size()
+                            + " 种）——玩家远远分不清哪扇是哪个玩法");
+            check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, south)).getBlock()
+                            == com.trialportal.registry.ModBlocks.WARD_PYLON.get()
+                            && arenaLevel.getBlockState(lobby.offset(0, 1, south - 1)).isAir(),
+                    "南沿正中应立守塔之枢，且塔前一格站得进人（实际 "
+                            + arenaLevel.getBlockState(lobby.offset(0, 1, south)).getBlock() + "）");
+            int cornerPost = Math.max(2, radius - 2);
+            int lamps = 0;
+            for (int sx : new int[] {-cornerPost, cornerPost})
+            {
+                for (int sz : new int[] {-cornerPost, cornerPost})
+                {
+                    if (arenaLevel.getBlockState(lobby.offset(sx, 2, sz))
+                            .is(net.minecraft.world.level.block.Blocks.LANTERN))
+                    {
+                        lamps++;
+                    }
+                }
+            }
+            check(failures, lamps == 4, "台面四角的灯柱只立了 " + lamps + " 根（应 4）");
+            check(failures, arenaLevel.getBlockState(lobby.offset(0, 0, 0))
+                            .is(net.minecraft.world.level.block.Blocks.CHISELED_POLISHED_BLACKSTONE)
+                            && arenaLevel.getBlockState(lobby.offset(1, 0, 1))
+                                    .is(net.minecraft.world.level.block.Blocks.GILDED_BLACKSTONE),
+                    "中央徽记应落在 y0（雕纹黑石心 + 镶金角）——中轴步道没铺出来");
             check(failures, arenaLevel.getBlockState(lobby.offset(0, 1, 0)).isAir()
                             && arenaLevel.getBlockState(lobby.offset(0, 3, 0)).isAir()
                             && arenaLevel.getBlockState(lobby.offset(4, 2, 4)).isAir(),
@@ -253,7 +303,7 @@ public final class TrialSelfTest
                     "隔间必须有该模式的终端，否则玩家进去就没法继续下一波与结算");
             check(failures, arenaLevel.getBlockState(cell.offset(gap, 1, row)).getBlock()
                             instanceof com.trialportal.block.ArenaExitBlock,
-                    "隔间必须有返回终端");
+                    "隔间必须有往返门");
             int cellFirst = countPlatformBlocks(arenaLevel, cell, radius);
             com.trialportal.arena.ArenaService.buildPlatform(arenaLevel, cell, TrialMode.CHALLENGE);
             int cellSecond = countPlatformBlocks(arenaLevel, cell, radius);
@@ -476,12 +526,36 @@ public final class TrialSelfTest
                     // 房内隔断：砌得出来、封不死房间、拆得干净
                     probePartitions(arenaLevel, failures);
                     probePartitionRulesRejected(failures);
+                    // 开服清扫两步之后，回返点还得留着（它跑在玩家登录之前）
+                    // 守塔的塔：注册、入口身份、结界铺面与四面门、血量池、拆台归还
+                    probeWardPylon(server, arenaLevel, failures);
+                    // 结界外缘落点：踩在台面上、落在围栏里、不挤在塔脚下
+                    probeDefenseEdgeSpawn(server, arenaLevel, failures);
+                    // 拆塔那只怪：分派比例 + goal 真扣血的对账
+                    probeTowerAssault(server, arenaLevel, failures);
+                    probeHomeSurvivesStartupSweep(server, arenaLevel, failures);
                 }
             }
         }
 
-        // 三个玩法门必须真能在生存里合出来（R8）
-        probePortalRecipes(server, failures);
+        // 通道只有往返门一条：玩法门不许有配方、往返门必须恰好有一条（§9 第 12 条）
+        probePassageRecipes(server, failures);
+        // 野外那台拆得掉，就要掉得出自己：战利品表按原版约定挂名，漏了不报错
+        probePortalBlocksDropThemselves(server, failures);
+        // 这一台通道的方向（在野外=进去，在场地=出来）
+        probeReturnPassage(failures);
+        // 关卡的 mobs[].count 是配比，不是写了没人读的摆设
+        probeChallengeSpawnPlan(failures);
+        // 数据里写的怪名要真在注册表里：找不到只会 warn 一句然后跳过，那场就打不完
+        probeMobIdsResolve(server, failures);
+        // 守塔内容与各玩法编号段
+        probeDefenseDefinitions(server, failures);
+        // 守塔的波次阶梯与通关那条件
+        probeDefenseWaveLadder(failures);
+        // 守塔状态机四条分支（塔破必须赢过判赢）
+        probeDefenseSteps(failures);
+        // 创造配置口的唯一写入口：坏值回滚、错 id 当场拒、副本不许写穿库
+        probeDefenseEdit(server, failures);
 
         // 直接执行一遍 /tei trial list：比查指令树里有没有这个名字更硬
         try
@@ -493,6 +567,18 @@ public final class TrialSelfTest
         catch (Exception exception)
         {
             failures.add("/tei trial list 执行失败：" + exception);
+        }
+        // 守塔的配置口也得真能执行：子树没注册时 brigadier 只会返回 0，光查名字查不出来
+        try
+        {
+            int defenses = server.getCommands()
+                    .performPrefixedCommand(server.createCommandSourceStack(), "tei defense list");
+            check(failures, defenses == DefenseLibrary.ids().size(),
+                    "/tei defense list 应回报 " + DefenseLibrary.ids().size() + " 份守塔定义，实际 " + defenses);
+        }
+        catch (Exception exception)
+        {
+            failures.add("/tei defense list 执行失败：" + exception);
         }
 
         ServerLevel level = server.overworld();
@@ -777,8 +863,7 @@ public final class TrialSelfTest
         RoomDefinition probe = new RoomDefinition();
         probe.size = List.of(31, 12, 21);
         probe.spawnPoints = 8;
-        probe.mobCap = 24;
-        probe.ceiling = true;
+                probe.ceiling = true;
         probe.pillars = 2;
         String error = probe.resolve("trial_portal:__probe_wide");
         if (error != null)
@@ -917,8 +1002,7 @@ public final class TrialSelfTest
         RoomDefinition room = new RoomDefinition();
         room.size = List.of(7, 4, 7);
         room.spawnPoints = 1;
-        room.mobCap = 1;
-        room.lightBlock = "minecraft:soul_lantern";
+                room.lightBlock = "minecraft:soul_lantern";
         room.lightSpacing = 2;
         String error = room.resolve("trial_portal:__probe_light");
         if (error != null)
@@ -963,8 +1047,7 @@ public final class TrialSelfTest
         RoomDefinition room = new RoomDefinition();
         room.size = List.of(7, 8, 7);
         room.spawnPoints = 1;
-        room.mobCap = 1;
-        room.pillars = 1;
+                room.pillars = 1;
         room.pillarBlock = "minecraft:gilded_blackstone";
         room.bossRoom = true;
         String error = room.resolve("trial_portal:__probe_pillar");
@@ -1300,8 +1383,7 @@ public final class TrialSelfTest
         RoomDefinition room = new RoomDefinition();
         room.size = List.of(9, 5, 9);
         room.spawnPoints = 1;
-        room.mobCap = 8;
-        room.partitions.add(barrier(x0, z0, x1, z1, height));
+                room.partitions.add(barrier(x0, z0, x1, z1, height));
         return room;
     }
 
@@ -1322,36 +1404,987 @@ public final class TrialSelfTest
         RoomDefinition room = new RoomDefinition();
         room.size = List.of(19, 8, 19);
         room.spawnPoints = 2;
-        room.mobCap = 6;
-        room.bossRoom = true;
+                room.bossRoom = true;
         room.partitions.add(barrier(9, 7, 9, 11, 2));
         return room;
+    }
+
+    /**
+     * 自家能拆的方块被拆掉时要真的掉出自己。战利品表走原版命名约定
+     * {@code <namespace>:blocks/<path>}，文件漏了、条目物品名写错、或方块被写成 {@code noLootTable()}，
+     * 原版都不报错——玩家那边只是"拆了门什么也没拿到"。所以要一路走到真掉落列表，不只看文件在不在。
+     * <p>
+     * 三个玩法门 + 通道那台都算：通道在野外拆得掉（硬度和玩法门同档），拆了拿不回来就等于通道丢了。
+     */
+    private static void probePortalBlocksDropThemselves(MinecraftServer server, List<String> failures)
+    {
+        ServerLevel overworld = server.overworld();
+        int checked = 0;
+        List<String> defects = new ArrayList<>();
+        for (net.minecraft.world.level.block.Block block : net.minecraftforge.registries.ForgeRegistries.BLOCKS)
+        {
+            if (!(block instanceof TrialPortalBlock) && !(block instanceof com.trialportal.block.ArenaExitBlock))
+            {
+                continue;
+            }
+            checked++;
+            ResourceLocation key = net.minecraftforge.registries.ForgeRegistries.BLOCKS.getKey(block);
+            ResourceLocation expected = ResourceLocation.fromNamespaceAndPath(key.getNamespace(),
+                    "blocks/" + key.getPath());
+            ResourceLocation written = block.getLootTable();
+            if (!expected.equals(written))
+            {
+                defects.add(key + " 的战利品表指向 " + written + "，不是原版约定的 " + expected
+                        + "（写错或 noLootTable() 都会让拆门白拆）");
+                continue;
+            }
+            net.minecraft.world.level.storage.loot.LootTable table = server.getLootData().getElement(
+                    new net.minecraft.world.level.storage.loot.LootDataId<>(
+                            net.minecraft.world.level.storage.loot.LootDataType.TABLE, expected));
+            if (table == null || table == net.minecraft.world.level.storage.loot.LootTable.EMPTY)
+            {
+                defects.add(key + " 缺战利品表（" + expected + " 没加载出来），拆掉就是什么都不掉");
+                continue;
+            }
+            net.minecraft.world.item.Item wanted = block.asItem();
+            if (wanted == Items.AIR)
+            {
+                defects.add(key + " 没有对应的物品，掉了也拿不到手");
+                continue;
+            }
+            List<ItemStack> drops = net.minecraft.world.level.block.Block.getDrops(block.defaultBlockState(),
+                    overworld, overworld.getSharedSpawnPos(), null);
+            int matched = 0;
+            for (ItemStack drop : drops)
+            {
+                if (drop.getItem() == wanted)
+                {
+                    matched += drop.getCount();
+                }
+            }
+            if (matched != 1)
+            {
+                defects.add(key + " 拆掉后掉的是 " + drops + "，应有 1 个 " + wanted
+                        + "（条目 name 写错时原版把它换成空气，游戏一声不响）");
+            }
+        }
+        check(failures, checked >= 4,
+                "注册表里至少该有 3 个玩法门 + 1 台通道方块，实际 " + checked + "——掉落判据根本没跑到东西");
+        check(failures, defects.isEmpty(), String.join("；", defects));
+    }
+
+    /**
+     * 开服清扫分两步（{@code sweepOrphanCells} → 下一轮 {@code tickPendingReleases}），它跑在玩家登录<b>之前</b>。
+     * 回返点必须活着走完这两步：以前第二步顺手 {@code takeHome}，等真人上线时家已被吃掉，
+     * {@code rescueStrandedPlayers} 只能把人丢去世界出生点。这里摆出"有平台 + 有回返点"的无主隔间，跑完两步再核。
+     */
+    private static void probeHomeSurvivesStartupSweep(MinecraftServer server, ServerLevel arena,
+            List<String> failures)
+    {
+        TrialManager manager = TrialManager.get(server);
+        java.util.UUID orphan = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:orphan".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int cell = manager.allocateCell(orphan, TrialMode.TRIAL, null);
+        check(failures, cell >= 0, "试炼段分不到隔间编号，回返点判据根本没跑");
+        if (cell < 0)
+        {
+            return;
+        }
+        int radius = com.trialportal.arena.ArenaService.radius();
+        BlockPos origin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+        com.trialportal.arena.ArenaService.buildPlatform(arena, origin, TrialMode.TRIAL);
+        manager.recordHome(orphan, new TrialManager.HomePos(Level.OVERWORLD, 8.5D, 200.0D, 8.5D, 0.0F, 0.0F));
+        // 前置：状态没摆出来，后面的判据就会在空数据上跑绿
+        check(failures, countPlatformBlocks(arena, origin, radius) > 0,
+                "前置失败：隔间 " + cell + " 的平台没建起来，清扫判据无从可核");
+        check(failures, manager.hasHome(orphan), "前置失败：回返点没记进去，后面的「还在不在」是句空话");
+
+        int swept = com.trialportal.arena.ArenaService.sweepOrphanCells(server);
+        check(failures, swept >= 1, "开服清扫没把这个无主隔间算进去（swept=" + swept + "），第二步压根不会跑");
+        com.trialportal.arena.ArenaService.tickPendingReleases(server);
+
+        check(failures, manager.hasHome(orphan),
+                "开服清扫第二步把回返点吃掉了：玩家此刻还没登录，等他上线只能被丢去世界出生点");
+        check(failures, countPlatformBlocks(arena, origin, radius) == 0,
+                "清扫之后隔间 " + cell + " 的平台方块还留在原地");
+        check(failures, !manager.cellsSnapshot().containsValue(cell),
+                "清扫之后隔间编号还没销账，下一次分配会绕过它");
+    }
+
+    /**
+     * 关卡里写的 {@code count} 必须真的变成出怪配比。以前这条字段只有校验在读、游戏不读，
+     * 写 4 和写 1 在场上一个样——"配了等于没配"。这里按「声明份数 == 队列槽位」对账，
+     * 并要求同一只怪连着占满自己那几槽：轮转取队首时比例才成立，打乱了就变成均匀撒。
+     */
+    private static void probeChallengeSpawnPlan(List<String> failures)
+    {
+        int checked = 0;
+        List<String> defects = new ArrayList<>();
+        for (ChallengeDefinition challenge : ChallengeLibrary.ordered())
+        {
+            for (String key : ChallengeDefinition.DIFFICULTY_KEYS)
+            {
+                ChallengeDefinition.Difficulty difficulty = challenge.difficulties.get(key);
+                if (difficulty == null)
+                {
+                    continue;
+                }
+                checked++;
+                int declared = 0;
+                for (TrialDefinition.MobEntry entry : difficulty.mobs)
+                {
+                    declared += Math.max(1, entry.count);
+                }
+                List<TrialDefinition.MobEntry> plan = difficulty.spawnPlan();
+                if (plan.size() != declared)
+                {
+                    defects.add(challenge.id() + "/" + key + " 声明的份数是 " + declared
+                            + "，展开出来的配比队列却有 " + plan.size() + " 槽");
+                    continue;
+                }
+                int slot = 0;
+                boolean misplaced = false;
+                for (TrialDefinition.MobEntry entry : difficulty.mobs)
+                {
+                    for (int i = 0; i < Math.max(1, entry.count); i++)
+                    {
+                        if (plan.get(slot++) != entry)
+                        {
+                            misplaced = true;
+                        }
+                    }
+                }
+                if (misplaced)
+                {
+                    defects.add(challenge.id() + "/" + key + " 的队列顺序与 mobs[] 对不上，比例会被打乱");
+                }
+            }
+        }
+        check(failures, checked >= 6, "至少该核到 6 档闯关配比，实际 " + checked + "——这条判据没跑到数据");
+        check(failures, defects.isEmpty(), String.join("；", defects));
+    }
+
+    /**
+     * 数据里写的怪名必须真在实体注册表里。这条只能开在运行期：离线进程看不到注册表。
+     * 为什么值得单独立一条——找不到时 {@code TrialManager} 只是 {@code LOGGER.warn} 一句就跳过，
+     * 那一波/那一档就永远刷不出东西：玩家站在空场里打到超时，而游戏一声不响。
+     * 整合包自己塞的 datapack 内容从没被我们的离线门扫过，全靠这条兜底。
+     */
+    private static void probeMobIdsResolve(MinecraftServer server, List<String> failures)
+    {
+        ServerLevel level = server.overworld();
+        Set<String> checked = new java.util.LinkedHashSet<>();
+        List<String> missing = new ArrayList<>();
+        List<String> notSpawnable = new ArrayList<>();
+        for (TrialDefinition definition : TrialLibrary.snapshot().values())
+        {
+            String where = definition.id();
+            for (TrialDefinition.Wave wave : definition.waves)
+            {
+                collectMobIds(level, wave.mobs, where, checked, missing, notSpawnable);
+            }
+            if (definition.scaling != null)
+            {
+                for (TrialDefinition.Tier tier : definition.scaling.tiers)
+                {
+                    for (String entity : tier.mobs)
+                    {
+                        noteMobId(level, entity, where, checked, missing, notSpawnable);
+                    }
+                }
+                for (TrialDefinition.FloorOverride override : definition.scaling.floors)
+                {
+                    collectMobIds(level, override.mobs, where, checked, missing, notSpawnable);
+                }
+            }
+            if (definition.boss != null)
+            {
+                noteMobId(level, definition.boss.entity, where, checked, missing, notSpawnable);
+            }
+        }
+        for (ChallengeDefinition challenge : ChallengeLibrary.ordered())
+        {
+            for (ChallengeDefinition.Difficulty difficulty : challenge.difficulties.values())
+            {
+                collectMobIds(level, difficulty.mobs, challenge.id(), checked, missing, notSpawnable);
+            }
+        }
+        check(failures, checked.size() >= 8,
+                "至少该核到 8 个不重复的怪物 id，实际 " + checked.size() + "——这条判据没跑到内容");
+        check(failures, missing.isEmpty(),
+                "这些 entity 不在实体注册表里，生成点只会 warn 一句然后跳过（那场打不完）：" + missing);
+        check(failures, notSpawnable.isEmpty(),
+                "这些 entity 注册表里有，但不是能刷出来的生物（同样会被跳过）：" + notSpawnable);
+    }
+
+    private static void collectMobIds(ServerLevel level, List<TrialDefinition.MobEntry> entries, String where,
+            Set<String> checked, List<String> missing, List<String> notSpawnable)
+    {
+        for (TrialDefinition.MobEntry entry : entries)
+        {
+            if (entry != null)
+            {
+                noteMobId(level, entry.entity, where, checked, missing, notSpawnable);
+            }
+        }
+    }
+
+    private static void noteMobId(ServerLevel level, String raw, String where, Set<String> checked,
+            List<String> missing, List<String> notSpawnable)
+    {
+        if (raw == null || raw.isBlank() || !checked.add(raw))
+        {
+            return; // 空条目由离线门的 resolve() 负责，这里只核"存不存在"
+        }
+        ResourceLocation id = ResourceLocation.tryParse(raw);
+        // 这里不能用 getValue()：1.20.1 的 Forge 注册表对不存在的 id 会回落到默认条目而不是 null
+        // （变异抽查实测：把 zombie 写成 zombia，getValue 照样返回一个非空值，判据静默空转）。
+        if (id == null || !net.minecraftforge.registries.ForgeRegistries.ENTITY_TYPES.containsKey(id))
+        {
+            missing.add(where + " → " + raw + (id == null ? "（写法不合法）" : ""));
+            return;
+        }
+        net.minecraft.world.entity.EntityType<?> type = net.minecraftforge.registries.ForgeRegistries.ENTITY_TYPES
+                .getValue(id);
+        try
+        {
+            if (!(type.create(level) instanceof net.minecraft.world.entity.Mob))
+            {
+                notSpawnable.add(where + " → " + raw + "（" + type.getCategory().getName() + "）");
+            }
+        }
+        catch (Throwable throwable)
+        {
+            notSpawnable.add(where + " → " + raw + " 构造失败 " + throwable.getClass().getName());
+        }
+    }
+
+    /**
+     * 守塔内容自核：波次非空、塔血为正、结界半径既在合法区间又不越出隔间能给的地，
+     * 外加各玩法的编号段两两不重叠（重叠就等于两个人共占一块地，拆台会拆到别人脸上）。
+     */
+    private static void probeDefenseDefinitions(MinecraftServer server, List<String> failures)
+    {
+        List<DefenseDefinition> list = DefenseLibrary.ordered();
+        check(failures, !list.isEmpty(), "defenses/ 一份守塔定义都没有，守塔模式开不出局");
+        List<String> defects = new ArrayList<>();
+        int entries = 0;
+        int limit = com.trialportal.arena.ArenaService.spacing() / 2 - 1;
+        for (DefenseDefinition defense : list)
+        {
+            if (defense.waves.isEmpty())
+            {
+                defects.add(defense.id() + " 没有波次");
+            }
+            if (defense.towerHealth <= 0.0D)
+            {
+                defects.add(defense.id() + " 塔血 " + defense.towerHealth + "（开局即归零等于直接判负）");
+            }
+            if (defense.wardRadius < DefenseDefinition.MIN_WARD_RADIUS
+                    || defense.wardRadius > DefenseDefinition.MAX_WARD_RADIUS)
+            {
+                defects.add(defense.id() + " 结界半径 " + defense.wardRadius + " 超出 "
+                        + DefenseDefinition.MIN_WARD_RADIUS + '~' + DefenseDefinition.MAX_WARD_RADIUS);
+            }
+            else if (defense.wardRadius > limit)
+            {
+                defects.add(defense.id() + " 结界半径 " + defense.wardRadius + " 会啃到相邻隔间（间隔 "
+                        + com.trialportal.arena.ArenaService.spacing() + "，最多 " + limit + "）");
+            }
+            for (TrialDefinition.Wave wave : defense.waves)
+            {
+                if (wave == null || wave.mobs.isEmpty())
+                {
+                    defects.add(defense.id() + " 有一波是空的");
+                    continue;
+                }
+                entries += wave.mobs.size();
+            }
+        }
+        check(failures, defects.isEmpty(), String.join("；", defects));
+        check(failures, entries >= 4, "守塔至少该有 4 条出怪条目，实际 " + entries + "——判据没跑到内容");
+
+        TrialMode[] modes = TrialMode.values();
+        for (int i = 0; i < modes.length; i++)
+        {
+            for (int j = i + 1; j < modes.length; j++)
+            {
+                int gap = Math.abs(modes[i].cellBase() - modes[j].cellBase());
+                check(failures, gap >= TrialManager.CELLS_PER_MODE,
+                        modes[i] + " 与 " + modes[j] + " 的隔间编号段重叠（间距 " + gap + " < "
+                                + TrialManager.CELLS_PER_MODE + "）");
+            }
+        }
+        // 守塔段真能分到地：编号必须落在本段内
+        TrialManager manager = TrialManager.get(server);
+        java.util.UUID tester = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:defense".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int cell = manager.allocateCell(tester, TrialMode.DEFENSE, null);
+        check(failures, cell >= TrialMode.DEFENSE.cellBase()
+                        && cell < TrialMode.DEFENSE.cellBase() + TrialManager.CELLS_PER_MODE,
+                "守塔段分到的编号 " + cell + " 不在 " + TrialMode.DEFENSE.cellBase() + "~"
+                        + (TrialMode.DEFENSE.cellBase() + TrialManager.CELLS_PER_MODE - 1) + " 之内");
+        manager.freeCell(tester);
+    }
+
+    /**
+     * 守塔的塔：注册齐不齐、大厅那座是不是入口、结界台面铺没铺满、四面有没有门、血量池能不能存能读、
+     * 拆台后方块与强制加载区块还得还回去。（"不许有合成配方"记在 {@link #probePassageRecipes} 那张账里，
+     * 这儿不再扫第二遍配方。）
+     */
+    private static void probeWardPylon(MinecraftServer server, ServerLevel arena, List<String> failures)
+    {
+        net.minecraft.world.level.block.Block block = com.trialportal.registry.ModBlocks.WARD_PYLON.get();
+        check(failures, net.minecraftforge.registries.ForgeRegistries.BLOCKS.containsKey(
+                        ResourceLocation.fromNamespaceAndPath(TrialPortal.MODID, "ward_pylon")),
+                "ward_pylon 方块没注册进注册表");
+        check(failures, block.asItem() != Items.AIR, "ward_pylon 没有物品，创造栏拿不到它（它按裁定不进生存配方）");
+        // 手里拿着可放置方块时，右键必须仍然落到功能方块身上（真机：拿着别的 mod 的战利品方块点不动塔）
+        check(failures, TrialEvents.keepsBlockUse(block.defaultBlockState())
+                        && TrialEvents.keepsBlockUse(com.trialportal.registry.ModBlocks.CHALLENGE_PORTAL.get()
+                        .defaultBlockState())
+                        && TrialEvents.keepsBlockUse(com.trialportal.registry.ModBlocks.ARENA_EXIT.get()
+                        .defaultBlockState()),
+                "自家功能终端没被登记成「右键留给方块自己」——手里拿着方块时点门/点塔会一声不响");
+        check(failures, !TrialEvents.keepsBlockUse(net.minecraft.world.level.block.Blocks.STONE.defaultBlockState())
+                        && !TrialEvents.keepsBlockUse(
+                        net.minecraft.world.level.block.Blocks.SHROOMLIGHT.defaultBlockState()),
+                "keepsBlockUse 见方块就放行，等于把全场所有方块上的「手里物品一用」都取消了，不是这条修复的本意");
+
+        BlockPos lobby = com.trialportal.arena.ArenaService.cellOrigin(com.trialportal.arena.ArenaService.LOBBY_CELL);
+        com.trialportal.arena.ArenaService.buildPlatform(arena, lobby, null);
+        int hallRadius = com.trialportal.arena.ArenaService.radius();
+        BlockPos entry = lobby.offset(0, 1, hallRadius - 1);
+        check(failures, arena.getBlockState(entry).getBlock() == block,
+                "大厅南沿正中应有守塔入口（北沿是三座拱门），实际是 "
+                        + arena.getBlockState(entry).getBlock() + " @ " + entry.toShortString());
+        BlockEntity entryEntity = arena.getBlockEntity(entry);
+        check(failures, entryEntity instanceof com.trialportal.block.entity.WardPylonBlockEntity pylon
+                        && pylon.isEntry(),
+                "大厅那座塔必须是「入口」（没有主人）：右键它才该开局，实际是 "
+                        + (entryEntity == null ? "没有方块实体" : entryEntity.getClass().getSimpleName()));
+
+        TrialManager manager = TrialManager.get(server);
+        java.util.UUID owner = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:ward".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int cell = manager.allocateCell(owner, TrialMode.DEFENSE, null);
+        check(failures, cell >= 0, "守塔段分不到编号，结界判据根本没跑");
+        if (cell < 0)
+        {
+            return;
+        }
+        int ward = 20;
+        BlockPos origin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+        com.trialportal.arena.ArenaService.buildPlatform(arena, origin, TrialMode.DEFENSE, ward);
+        net.minecraft.world.phys.AABB built = new net.minecraft.world.phys.AABB(
+                origin.getX() - ward - 1, origin.getY(), origin.getZ() - ward - 1,
+                origin.getX() + ward + 2, origin.getY() + com.trialportal.arena.ArenaService.fenceHeight() + 2,
+                origin.getZ() + ward + 2);
+        manager.recordBuilt(owner, 0, built);
+        int floor = countPlatformBlocks(arena, origin, ward);
+        check(failures, floor >= (2 * ward - 1) * (2 * ward - 1),
+                "结界台面没按 ward 半径铺满：数到 " + floor + " 块（半径 " + ward + "）");
+        int blocked = 0;
+        for (int[] gate : new int[][]{{ward, 0}, {-ward, 0}, {0, ward}, {0, -ward}})
+        {
+            if (!arena.getBlockState(origin.offset(gate[0], 1, gate[1])).isAir())
+            {
+                blocked++;
+            }
+        }
+        check(failures, blocked == 0, "守塔结界四面都要留门（怪要从外面走进来），有 " + blocked + " 面被围栏堵死");
+        check(failures, !arena.getBlockState(origin.offset(ward, 1, ward)).isAir(),
+                "结界角上不该开门（那是围栏），那里是空的——怪能直接跳进来");
+
+        // 塔由 buildPlatform 自己补在台心（上面那次建台），这里只取回来核血量池
+        BlockPos towerPos = origin.offset(0, 1, 0);
+        check(failures, arena.getBlockState(towerPos).getBlock() == block,
+                "守塔隔间的台心应有塔，实际是 " + arena.getBlockState(towerPos).getBlock());
+        if (!(arena.getBlockEntity(towerPos) instanceof com.trialportal.block.entity.WardPylonBlockEntity tower))
+        {
+            check(failures, false, "放了 ward_pylon 却拿不到方块实体，血量池无从可核");
+            return;
+        }
+        tower.configure(120.0D, owner, "trial_portal:first_ward");
+        check(failures, tower.towerHealth() == 120.0D && !tower.destroyed(),
+                "开局应满血未破，实际 " + tower.towerHealth());
+        CompoundTag saved = tower.saveWithoutMetadata();
+        com.trialportal.block.entity.WardPylonBlockEntity reloaded =
+                new com.trialportal.block.entity.WardPylonBlockEntity(towerPos, block.defaultBlockState());
+        reloaded.load(saved);
+        check(failures, reloaded.towerMax() == 120.0D && reloaded.towerHealth() == 120.0D
+                        && owner.equals(reloaded.owner()) && "trial_portal:first_ward".equals(reloaded.defenseId()),
+                "血量池 NBT 往返不一致（max=" + reloaded.towerMax() + " hp=" + reloaded.towerHealth()
+                        + " owner=" + reloaded.owner() + " id=" + reloaded.defenseId() + "）");
+        reloaded.damage(50.0D);
+        check(failures, Math.abs(reloaded.towerHealth() - 70.0D) < 1.0E-6D && !reloaded.destroyed(),
+                "扣 50 应剩 70 且未破，实际 " + reloaded.towerHealth());
+        check(failures, reloaded.damage(500.0D) && reloaded.destroyed() && reloaded.towerHealth() == 0.0D,
+                "打到归零必须报「这次破了」（判负靠它），实际 hp=" + reloaded.towerHealth());
+
+        com.trialportal.arena.ArenaService.releaseCellAt(arena, cell, 0, built);
+        check(failures, countPlatformBlocks(arena, origin, ward) == 0,
+                "拆完结界台面还剩 " + countPlatformBlocks(arena, origin, ward) + " 块");
+        check(failures, !hasForcedChunkIn(arena, origin.offset(-ward - 1, 0, -ward - 1),
+                        origin.offset(ward + 1, 0, ward + 1)),
+                "拆完结界要把建房时强制加载的区块还回去");
+        manager.freeCell(owner);
+    }
+
+    /**
+     * 守塔的波次阶梯：每一波都取得到内容、定义级倍率只乘一次、波次表走到底必须取不到下一波
+     * （通关就靠这条 null），间歇的三级取值与 {@code boss_affix_pool} 真被读到也在这里核。
+     */
+    private static void probeDefenseWaveLadder(List<String> failures)
+    {
+        List<DefenseDefinition> list = DefenseLibrary.ordered();
+        check(failures, !list.isEmpty(), "守塔波次阶梯没有内容可核：defenses/ 是空的");
+        for (DefenseDefinition defense : list)
+        {
+            int waves = defense.finiteWaveCount();
+            check(failures, waves == defense.waves.size(),
+                    defense.id() + " 的 finiteWaveCount 报 " + waves + "，波次表却有 " + defense.waves.size() + " 条");
+            double definitionHp = defense.strength == null ? 1.0D : defense.strength.healthMultiplier;
+            int expanded = 0;
+            for (int index = 0; index < waves; index++)
+            {
+                TrialDefinition.Wave wave = defense.waves.get(index);
+                TrialDefinition.WaveContent content = defense.waveFor(index);
+                if (content == null)
+                {
+                    check(failures, false, defense.id() + " 第 " + (index + 1) + " 波取不到内容——状态机把它读成"
+                            + "「没有更多波」，这场会在第 " + (index + 1) + " 波直接判通关");
+                    break;
+                }
+                check(failures, !content.mobs.isEmpty(), defense.id() + " 第 " + (index + 1) + " 波展开后没有怪");
+                check(failures, content.title != null && !content.title.isBlank(),
+                        defense.id() + " 第 " + (index + 1) + " 波没有标题，播报会显示 null");
+                int count = 0;
+                for (TrialDefinition.MobEntry entry : content.mobs)
+                {
+                    count += Math.max(1, entry.count);
+                }
+                expanded += count;
+                double waveHp = wave.strength == null ? 1.0D : wave.strength.healthMultiplier;
+                double combinedHp = content.strength == null ? 1.0D : content.strength.healthMultiplier;
+                check(failures, Math.abs(combinedHp - definitionHp * waveHp) < 1.0E-9D,
+                        defense.id() + " 第 " + (index + 1) + " 波的血量倍率应是定义级 " + definitionHp
+                                + " × 波次级 " + waveHp + " = " + (definitionHp * waveHp) + "，实际 "
+                                + combinedHp + "（倍率乘了不止一次或没乘上）");
+                boolean hasBoss = content.mobs.stream().anyMatch(entry -> entry.boss);
+                if (!defense.bossAffixPool.isEmpty())
+                {
+                    check(failures, !hasBoss || content.affixPool != null,
+                            defense.id() + " 写了 boss_affix_pool，但带 BOSS 的那一波取不到池子（会退回全量词条）");
+                }
+            }
+            check(failures, expanded > 0, defense.id() + " 整份波次表一只怪都没展开出来");
+            check(failures, defense.waveFor(waves) == null,
+                    defense.id() + " 的波次表只有 " + waves + " 条，第 " + (waves + 1) + " 波却还取得到内容——"
+                            + "通关永远不会触发，玩家得在场外一直等");
+            check(failures, defense.waveFor(-1) == null, defense.id() + " 的 waveFor(-1) 没返回 null");
+            for (int index = 0; index <= waves; index++)
+            {
+                int ticks = defense.intermissionTicksFor(index);
+                TrialDefinition.Wave wave = index < waves ? defense.waves.get(index) : null;
+                int expected = wave != null && wave.intermissionTicks >= 0 ? wave.intermissionTicks
+                        : defense.intermissionTicks;
+                check(failures, ticks == expected, defense.id() + " 第 " + (index + 1) + " 波后的间歇应是 "
+                        + expected + "，实际 " + ticks + "（波里写的没被读，或越界没回落到定义级）");
+                check(failures, ticks >= 20, defense.id() + " 第 " + (index + 1) + " 波后的间歇只有 " + ticks
+                        + " tick，不到一秒就被下一波顶上去");
+            }
+        }
+        // 靶子由门自种：自带内容的定义级倍率写的是 1.0（恒等），拿它核不出「定义级被丢掉」与「被乘两遍」，
+        // 所以这里现场造一份两端都不为 1 的定义来折。
+        DefenseDefinition chain = new DefenseDefinition();
+        chain.wardRadius = DefenseDefinition.MIN_WARD_RADIUS;
+        chain.strength = new MobStrength();
+        chain.strength.healthMultiplier = 2.0D;
+        chain.strength.armorBonus = 1.0D;
+        TrialDefinition.Wave layer = new TrialDefinition.Wave();
+        layer.strength = new MobStrength();
+        layer.strength.healthMultiplier = 1.5D;
+        layer.strength.armorBonus = 0.5D;
+        TrialDefinition.MobEntry mob = new TrialDefinition.MobEntry();
+        mob.entity = "minecraft:zombie";
+        layer.mobs.add(mob);
+        chain.waves.add(layer);
+        TrialDefinition.WaveContent folded = chain.waveFor(0);
+        check(failures, folded != null && folded.strength != null
+                        && Math.abs(folded.strength.healthMultiplier - 3.0D) < 1.0E-9D
+                        && Math.abs(folded.strength.armorBonus - 1.5D) < 1.0E-9D,
+                "强度链折错了：定义级 2.0 与波次级 1.5 应乘成 3.0、加值 1.0+0.5 应折成 1.5，实际 "
+                        + (folded == null || folded.strength == null ? "整条强度都没了"
+                        : folded.strength.healthMultiplier + " / " + folded.strength.armorBonus));
+    }
+
+    /**
+     * 守塔状态机的四条分支：塔破、还在打、本波清空、最后一波清空。
+     * 判负必须排在判赢之前——最后一只怪死在塔归零之后那一同一 tick，这场算输。
+     */
+    private static void probeDefenseSteps(List<String> failures)
+    {
+        DefenseDefinition defense = DefenseLibrary.ordered().isEmpty() ? null : DefenseLibrary.ordered().get(0);
+        if (defense == null)
+        {
+            failures.add("守塔分支裁决没跑：defenses/ 是空的");
+            return;
+        }
+        int last = defense.finiteWaveCount() - 1;
+
+        TrialSession fighting = defenseSession();
+        fighting.waveIndex = 0;
+        fighting.aliveMobs.add(java.util.UUID.randomUUID());
+        check(failures, TrialManager.nextDefenseStep(fighting, defense, false) == TrialManager.DefenseStep.FIGHTING,
+                "场上还有怪时必须算「交战中」，否则下一波会叠着刷");
+        check(failures, TrialManager.nextDefenseStep(fighting, defense, true) == TrialManager.DefenseStep.LOST_TOWER,
+                "塔血归零时哪怕怪还在也必须判负");
+
+        TrialSession cleared = defenseSession();
+        cleared.waveIndex = 0;
+        check(failures, TrialManager.nextDefenseStep(cleared, defense, false) == TrialManager.DefenseStep.WAVE_CLEARED,
+                "第 1 波清空且还有下一波时该进间歇，实际不是");
+
+        cleared.phase = TrialSession.Phase.INTERMISSION;
+        cleared.intermissionTicksLeft = 100;
+        check(failures, TrialManager.nextDefenseStep(cleared, defense, false) == TrialManager.DefenseStep.COUNTDOWN,
+                "间歇中（场上没怪）不该被算成交战或清空");
+        check(failures, TrialManager.nextDefenseStep(cleared, defense, true) == TrialManager.DefenseStep.LOST_TOWER,
+                "间歇里塔被人拆了也必须立刻判负，不能等倒计时走完");
+
+        TrialSession won = defenseSession();
+        won.waveIndex = last;
+        check(failures, TrialManager.nextDefenseStep(won, defense, false) == TrialManager.DefenseStep.WON,
+                "最后一波清空且塔还活着就是守住，实际不是");
+        check(failures, TrialManager.nextDefenseStep(won, defense, true) == TrialManager.DefenseStep.LOST_TOWER,
+                "同一 tick 里「最后一波清空」与「塔归零」并存时必须算输");
+
+        // 只有一波的守塔：清空即通关，不能永远等在「还有下一波」上
+        DefenseDefinition single = new DefenseDefinition();
+        single.wardRadius = DefenseDefinition.MIN_WARD_RADIUS;
+        TrialDefinition.Wave only = new TrialDefinition.Wave();
+        TrialDefinition.MobEntry entry = new TrialDefinition.MobEntry();
+        entry.entity = "minecraft:zombie";
+        entry.count = 1;
+        only.mobs.add(entry);
+        single.waves.add(only);
+        TrialSession singleWave = defenseSession();
+        singleWave.waveIndex = 0;
+        check(failures, single.finiteWaveCount() == 1 && single.waveFor(0) != null && single.waveFor(1) == null,
+                "单波守塔定义应能取到第 1 波且第 2 波为 null");
+        check(failures, TrialManager.nextDefenseStep(singleWave, single, false) == TrialManager.DefenseStep.WON,
+                "单波定义清空后必须直接判通关，否则这一场永远结束不了");
+        check(failures, single.intermissionTicksFor(0) == single.intermissionTicks
+                        && single.intermissionTicksFor(9) == single.intermissionTicks,
+                "没写间歇的波次要回落到定义级默认（越界也一样），实际不是");
+
+        // 会话的玩法与播报名：三种内容目录各查一次。真机上守塔曾被打印成 (challenge)、
+        // 点别的门时报「你当前那一场是「null」」——两条都因为"trials/ 查不到就当它是副本"。
+        TrialSession labeled = defenseSession();
+        labeled.mode = TrialMode.DEFENSE;
+        labeled.defenseId = defense.id();
+        check(failures, labeled.modeOf(null) == TrialMode.DEFENSE,
+                "守塔会话的玩法应是自己钉的 DEFENSE（拿 definitionId 去 trials/ 反查会错成 "
+                        + labeled.modeOf(null) + "）");
+        check(failures, defense.displayNameOrDefault().equals(labeled.displayName()),
+                "守塔会话的播报名应是「" + defense.displayNameOrDefault() + "」，实际拿到「"
+                        + labeled.displayName() + "」");
+        TrialSession legacy = new TrialSession(
+                java.util.UUID.nameUUIDFromBytes("trial_portal:selftest:legacy".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                "selftest", "trial_portal:gone", net.minecraft.world.level.Level.OVERWORLD, BlockPos.ZERO);
+        check(failures, legacy.mode == null && legacy.modeOf(null) == TrialMode.CHALLENGE,
+                "老会话（没钉玩法、定义也查不到）应回退成 CHALLENGE，与改动前一致");
+        check(failures, "trial_portal:gone".equals(legacy.displayName()),
+                "三份目录都查不到时应老实回落到 id，实际「" + legacy.displayName() + "」");
+    }
+
+    private static TrialSession defenseSession()
+    {
+        return new TrialSession(java.util.UUID.nameUUIDFromBytes("trial_portal:selftest:defense-session".
+                getBytes(java.nio.charset.StandardCharsets.UTF_8)), "selftest", "trial_portal:probe",
+                net.minecraft.world.level.Level.OVERWORLD, BlockPos.ZERO);
+    }
+
+    /**
+     * 结界外缘落点：真建一台结界再扫 80 个点。
+     * 要的性质是「踩在台面上、落在围栏里、离塔有段距离」——越过围栏就把怪丢进未加载的场外，
+     * 那一波就永远清不完；全落在塔脚下则怪一出生就叠进方块里。
+     */
+    private static void probeDefenseEdgeSpawn(MinecraftServer server, ServerLevel arena, List<String> failures)
+    {
+        TrialManager manager = TrialManager.get(server);
+        java.util.UUID owner = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:edge".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int cell = manager.allocateCell(owner, TrialMode.DEFENSE, null);
+        if (cell < 0)
+        {
+            check(failures, false, "守塔段分不到编号，结界落点判据根本没跑");
+            return;
+        }
+        int ward = 14;
+        BlockPos origin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+        com.trialportal.arena.ArenaService.buildPlatform(arena, origin, TrialMode.DEFENSE, ward);
+        java.util.Set<String> distinct = new java.util.LinkedHashSet<>();
+        int outside = 0;
+        int notStandable = 0;
+        int offDeck = 0;
+        Vec3 center = Vec3.atCenterOf(origin);
+        net.minecraft.util.RandomSource random = net.minecraft.util.RandomSource.create(20261008L);
+        for (int sample = 0; sample < 80; sample++)
+        {
+            Vec3 point = TrialManager.wardEdgePosition(arena, origin, ward, random);
+            BlockPos standing = BlockPos.containing(point);
+            distinct.add(standing.toShortString());
+            if (!arena.getBlockState(standing.below()).isRedstoneConductor(arena, standing.below())
+                    || !arena.getBlockState(standing).isAir() || !arena.getBlockState(standing.above()).isAir())
+            {
+                notStandable++;
+            }
+            if (standing.getY() != origin.getY() + 1)
+            {
+                offDeck++;
+            }
+            double distance = Math.sqrt(point.distanceToSqr(center));
+            if (distance < ward * 0.45D || distance > ward + 0.6D)
+            {
+                outside++;
+            }
+        }
+        check(failures, distinct.size() >= 20,
+                "结界外缘的 80 次取样只落在 " + distinct.size() + " 个点上——多半全部退回了兜底位");
+        check(failures, notStandable == 0, notStandable + " 个外缘落点脚下不实心或头顶被挡，怪会悬空或卡进方块");
+        check(failures, offDeck == 0, offDeck + " 个落点不在台面那一层（应为 origin.y+1），怪会掉到台下去");
+        check(failures, outside == 0,
+                "有落点越过围栏或挤在塔脚下（合法区间 " + (ward * 0.45D) + "~" + (ward + 0.6) + "）：场外的区块没被强制加载，"
+                        + "怪卡在未加载区里这一波就清不完");
+        com.trialportal.arena.ArenaService.releaseCellAt(arena, cell, 0, new net.minecraft.world.phys.AABB(
+                origin.getX() - ward - 1, origin.getY(), origin.getZ() - ward - 1,
+                origin.getX() + ward + 2, origin.getY() + com.trialportal.arena.ArenaService.fenceHeight() + 2,
+                origin.getZ() + ward + 2));
+        manager.freeCell(owner);
+    }
+
+    /**
+     * 创造配置口（{@code /tei defense}）的唯一写入口：改坏必须回滚、写不存在的怪必须当场拒、
+     * 改的必须是这一场自己的副本，还有台面宽度要跟着这一场走。
+     */
+    private static void probeDefenseEdit(MinecraftServer server, List<String> failures)
+    {
+        List<DefenseDefinition> loaded = DefenseLibrary.ordered();
+        if (loaded.isEmpty())
+        {
+            check(failures, false, "配置口没有内容可核：defenses/ 是空的");
+            return;
+        }
+        DefenseDefinition library = loaded.get(0);
+        double originalHealth = library.towerHealth;
+        int originalWaves = library.finiteWaveCount();
+
+        DefenseDefinition live = library.copy();
+        check(failures, live.finiteWaveCount() == originalWaves && live.wardRadius == library.wardRadius
+                        && Math.abs(live.towerHealth - originalHealth) < 1.0E-9D
+                        && Math.abs(live.towerFocusShare - library.towerFocusShare) < 1.0E-9D,
+                "copy() 没原样带出内容，开局拿到的就是半份定义");
+        check(failures, DefenseEdit.setKnob(live, "tower_health", originalHealth + 600.0D) == null
+                        && Math.abs(live.towerHealth - (originalHealth + 600.0D)) < 1.0E-9D,
+                "改本场的塔血没改成（配置口等于摆设）");
+        check(failures, Math.abs(library.towerHealth - originalHealth) < 1.0E-9D,
+                "改这一场时把库里那份也改了：同一次加载里别人开局会拿到被调过的塔血");
+        live.waves.get(0).mobs.get(0).count = 31;
+        check(failures, library.waves.get(0).mobs.get(0).count != 31,
+                "copy() 是浅拷贝——改一只怪的只数就写穿了库里的条目");
+
+        DefenseDefinition rollback = library.copy();
+        double shareBefore = rollback.towerFocusShare;
+        String shareError = DefenseEdit.setKnob(rollback, "focus_share", 0.0D);
+        check(failures, shareError != null, "focus_share=0（没有怪去拆塔）从配置口居然能写进去");
+        check(failures, Math.abs(rollback.towerFocusShare - shareBefore) < 1.0E-9D,
+                "被拒的写法留下了半个改动（拆塔怪比例现在是 " + rollback.towerFocusShare + "）——回滚没做");
+        check(failures, DefenseEdit.setKnob(rollback, "no_such_knob", 1.0D) != null,
+                "不认识的旋钮被静默接受了，打错字的人只会看到「什么都没发生」");
+
+        DefenseDefinition adder = library.copy();
+        String badId = DefenseEdit.addMob(server.overworld(), adder, 0, "minecraft:zombia", 1, false);
+        check(failures, badId != null && badId.contains("注册表"),
+                "写错怪物 id 居然通过了配置口（真机上它只会在生成点 warn 一句然后跳过）：" + badId);
+        check(failures, adder.finiteWaveCount() == originalWaves
+                        && adder.waves.get(0).mobs.size() == library.waves.get(0).mobs.size(),
+                "被拒的条目还留在波次里");
+        check(failures, DefenseEdit.addMob(server.overworld(), adder, originalWaves, "minecraft:zombie", 2, true) == null
+                        && adder.finiteWaveCount() == originalWaves + 1,
+                "下标=现有波数时应能追加新的一波（这是「给这场加一波」的唯一入口）");
+        TrialDefinition.MobEntry appended = adder.waves.get(originalWaves).mobs.get(0);
+        check(failures, appended.count == 2 && appended.boss,
+                "追加那一波的只数/头目标志没落进去（" + appended.count + " / " + appended.boss + "）");
+        check(failures, DefenseEdit.addMob(server.overworld(), adder, 99, "minecraft:zombie", 1, false) != null,
+                "波次下标越界没拦住");
+        check(failures, DefenseEdit.removeWave(adder, originalWaves, originalWaves) != null,
+                "正在打的那一波居然能删（删完这一波就没有「下一波」可进了）");
+        check(failures, DefenseEdit.removeWave(adder, 0, originalWaves) == null
+                        && adder.finiteWaveCount() == originalWaves,
+                "删掉不是正在打的那一波应能成");
+        DefenseDefinition lastOnly = library.copy();
+        lastOnly.waves.clear();
+        TrialDefinition.Wave only = new TrialDefinition.Wave();
+        TrialDefinition.MobEntry one = new TrialDefinition.MobEntry();
+        one.entity = "minecraft:zombie";
+        only.mobs.add(one);
+        lastOnly.waves.add(only);
+        check(failures, DefenseEdit.removeWave(lastOnly, 0, -1) != null,
+                "只剩一波时还能删——删完 finiteWaveCount 就是 0，开局第一波都取不到");
+
+        TrialSession ward = defenseSession();
+        ward.mode = TrialMode.DEFENSE;
+        ward.liveDefense = adder;
+        int expect = Math.max(com.trialportal.arena.ArenaService.radius(), adder.wardRadius);
+        check(failures, com.trialportal.arena.ArenaService.platformRadiusFor(ward) == expect,
+                "守塔会话的台面宽度没跟着结界半径（应是 " + expect + "，实际 "
+                        + com.trialportal.arena.ArenaService.platformRadiusFor(ward)
+                        + "）——回大厅再回来会把结界削掉一圈，人站在被削掉的那半张台上就是站在虚空里");
+        check(failures, com.trialportal.arena.ArenaService.platformRadiusFor(null)
+                        == com.trialportal.arena.ArenaService.radius(),
+                "没有会话时该用全局默认宽度（大厅就是默认宽度）");
+        TrialSession dungeon = defenseSession();
+        dungeon.mode = TrialMode.CHALLENGE;
+        dungeon.liveDefense = adder;
+        check(failures, com.trialportal.arena.ArenaService.platformRadiusFor(dungeon)
+                        == com.trialportal.arena.ArenaService.radius(),
+                "副本会话不该因为身上带着一份守塔内容就被加宽台面");
+    }
+
+    /**
+     * 拆塔那只怪：分派比例与边界（纯判据）+ goal 真挂上、没走到不扣血、扣血按间隔、
+     * 塔归零或怪出了结界就不再啃。
+     * <p>
+     * 这一族的"怪真的在动"要靠实体 tick，无头门看不见；所以把**能判的性质都搬到不碰 tick 的地方**：
+     * 分派交给纯的 {@code DefenseFocus}，扣血由门自己驱动 {@code goal.tick()} 若干次后对账血量池的差值。
+     */
+    private static void probeTowerAssault(MinecraftServer server, ServerLevel arena, List<String> failures)
+    {
+        check(failures, DefenseFocus.forRoll(0.0D, 0.5D) == DefenseFocus.TOWER
+                        && DefenseFocus.forRoll(0.49D, 0.5D) == DefenseFocus.TOWER
+                        && DefenseFocus.forRoll(0.5D, 0.5D) == DefenseFocus.PLAYER
+                        && DefenseFocus.forRoll(0.99D, 0.5D) == DefenseFocus.PLAYER,
+                "分派边界不对：按 0.5 分派时 0.49 该去拆塔、0.5 该打人");
+        check(failures, DefenseFocus.forRoll(-0.1D, 0.5D) == DefenseFocus.PLAYER
+                        && DefenseFocus.forRoll(1.5D, 0.5D) == DefenseFocus.PLAYER,
+                "越界的 roll 必须退回打人那支，不能猜它是 0 就全派去拆塔");
+        net.minecraft.util.RandomSource rollStream = net.minecraft.util.RandomSource.create(777L);
+        int toTower = 0;
+        for (int i = 0; i < 400; i++)
+        {
+            if (DefenseFocus.forRoll(rollStream.nextDouble(), 0.5D) == DefenseFocus.TOWER)
+            {
+                toTower++;
+            }
+        }
+        check(failures, toTower >= 160 && toTower <= 240,
+                "400 次按 0.5 的分派只给了 " + toTower + " 只去拆塔——比例或随机流不对，"
+                        + "「怪有两个目标」就成了一句空话");
+        // 端点必须被 resolve 拦住：share=0 意味着没有怪去拆塔（那条判负分支永远走不到），
+        // share=1 意味着玩家站在原地就赢。自种一份坏数据，看闸门咬不咬。
+        DefenseDefinition degenerate = new DefenseDefinition();
+        degenerate.wardRadius = DefenseDefinition.MIN_WARD_RADIUS;
+        TrialDefinition.Wave seedWave = new TrialDefinition.Wave();
+        TrialDefinition.MobEntry seedMob = new TrialDefinition.MobEntry();
+        seedMob.entity = "minecraft:zombie";
+        seedWave.mobs.add(seedMob);
+        degenerate.waves.add(seedWave);
+        degenerate.towerFocusShare = 0.0D;
+        check(failures, degenerate.resolve("probe:zero_share") != null,
+                "tower_focus_share=0（没有怪去拆塔）居然通过了校验");
+        degenerate.towerFocusShare = 1.0D;
+        check(failures, degenerate.resolve("probe:one_share") != null,
+                "tower_focus_share=1（没有怪打玩家）居然通过了校验");
+        degenerate.towerFocusShare = 0.5D;
+        degenerate.towerHitIntervalTicks = 1;
+        check(failures, degenerate.resolve("probe:fast_hit") != null,
+                "tower_hit_interval_ticks=1（每 tick 扣一次）居然通过了校验");
+        degenerate.towerHitIntervalTicks = 20;
+        degenerate.towerDamagePerHit = degenerate.towerHealth * 2.0D;
+        check(failures, degenerate.resolve("probe:one_shot") != null,
+                "一口伤害比整塔血还大（塔瞬间没血）居然通过了校验");
+        degenerate.towerDamagePerHit = 2.0D;
+        check(failures, degenerate.resolve("probe:sane") == null,
+                "改回正常值之后这份定义应能通过，实际报：" + degenerate.resolve("probe:sane"));
+
+        TrialManager manager = TrialManager.get(server);
+        java.util.UUID owner = java.util.UUID.nameUUIDFromBytes(
+                "trial_portal:selftest:assault".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int cell = manager.allocateCell(owner, TrialMode.DEFENSE, null);
+        if (cell < 0)
+        {
+            check(failures, false, "守塔段分不到编号，拆塔判据根本没跑");
+            return;
+        }
+        int ward = 12;
+        BlockPos origin = com.trialportal.arena.ArenaService.cellOrigin(cell);
+        com.trialportal.arena.ArenaService.buildPlatform(arena, origin, TrialMode.DEFENSE, ward);
+        BlockPos towerPos = origin.offset(0, 1, 0);
+        if (!(arena.getBlockEntity(towerPos) instanceof com.trialportal.block.entity.WardPylonBlockEntity tower))
+        {
+            check(failures, false, "台心拿不到塔的血量池，拆塔判据没跑");
+            manager.freeCell(owner);
+            return;
+        }
+        tower.configure(100.0D, owner, "trial_portal:probe");
+
+        DefenseDefinition probe = new DefenseDefinition();
+        probe.wardRadius = ward;
+        probe.towerDamagePerHit = 2.0D;
+        probe.towerHitIntervalTicks = 10;
+        probe.towerFocusShare = 1.0D; // 只给这条判据用：要求「这一只必去拆塔」
+        TrialSession session = defenseSession();
+        session.towerPos = towerPos;
+
+        net.minecraft.world.entity.monster.Vindicator hitter =
+                new net.minecraft.world.entity.monster.Vindicator(EntityType.VINDICATOR, arena);
+        hitter.setPos(towerPos.getX() + 1.0D, towerPos.getY(), towerPos.getZ() + 0.5D);
+        arena.addFreshEntity(hitter);
+        DefenseFocus assigned = TrialManager.assignDefenseFocus(hitter, probe, session, null,
+                net.minecraft.util.RandomSource.create(1L));
+        check(failures, assigned == DefenseFocus.TOWER, "share=1 时这只怪应被派去拆塔，实际 " + assigned);
+        com.trialportal.arena.TowerAssaultGoal goal = null;
+        int goalCount = 0;
+        for (net.minecraft.world.entity.ai.goal.WrappedGoal wrapped : hitter.goalSelector.getAvailableGoals())
+        {
+            if (wrapped.getGoal() instanceof com.trialportal.arena.TowerAssaultGoal assault)
+            {
+                goalCount++;
+                goal = assault;
+            }
+        }
+        check(failures, goalCount == 1, "拆塔 goal 应恰好挂上一个，实际 " + goalCount + " 个");
+        if (goal == null)
+        {
+            check(failures, false, "goal 没挂上，后面的扣血对账没跑");
+            manager.freeCell(owner);
+            return;
+        }
+        check(failures, goal.canUse(), "怪贴着塔且塔还有血时 goal 该能用（canUse  false 就等于没人拆塔）");
+        check(failures, goal.requiresUpdateEveryTick(),
+                "扣血按 tick 累计，这个 goal 必须每 tick 更新，否则间隔会悄悄变成两倍");
+
+        // 没走到跟前不许扣血：把它挪到激活半径内但够不着塔的位置
+        hitter.setPos(towerPos.getX() + 9.0D, towerPos.getY(), towerPos.getZ() + 0.5D);
+        goal.start();
+        for (int tick = 0; tick < 60; tick++)
+        {
+            goal.tick();
+        }
+        check(failures, Math.abs(tower.towerHealth() - 100.0D) < 1.0E-6D,
+                "怪离塔 9 格还在扣血（塔血 " + tower.towerHealth() + "）——REACH 没拦住，玩家还没照面塔就没了");
+
+        hitter.setPos(towerPos.getX() + 1.0D, towerPos.getY(), towerPos.getZ() + 0.5D);
+        goal.start();
+        for (int tick = 0; tick < 45; tick++)
+        {
+            goal.tick();
+        }
+        // 间隔 10、45 次 tick → 正好 4 下、每下 2 点
+        check(failures, Math.abs(tower.towerHealth() - 92.0D) < 1.0E-6D,
+                "贴塔打 45 tick 应扣 4 下共 8 点（剩 92），实际塔血 " + tower.towerHealth()
+                        + "（间隔或每口伤害算错了）");
+
+        // 两个目标不许打架：怪一旦有仇恨目标，拆塔这条就让路（否则它会边跟人打边掉塔血，玩家看不见原因）
+        net.minecraft.world.entity.monster.Vindicator rival =
+                new net.minecraft.world.entity.monster.Vindicator(EntityType.VINDICATOR, arena);
+        rival.setPos(towerPos.getX() - 2.0D, towerPos.getY(), towerPos.getZ() + 0.5D);
+        arena.addFreshEntity(rival);
+        hitter.setTarget(rival);
+        double whileFighting = tower.towerHealth();
+        check(failures, !goal.canUse(), "怪已经在跟人打了，拆塔 goal 还开着——两个目标在抢同一次移动");
+        for (int tick = 0; tick < 45; tick++)
+        {
+            goal.tick();
+        }
+        check(failures, tower.towerHealth() == whileFighting,
+                "有仇恨目标期间还在扣塔血（" + whileFighting + "→" + tower.towerHealth() + "）");
+        hitter.setTarget(null);
+        check(failures, goal.canUse(), "仇恨解除之后应回去拆塔，实际不拆了");
+        rival.discard();
+
+        tower.damage(1000.0D);
+        check(failures, !goal.canUse(), "塔血归零后 goal 必须关掉，否则这场判负了怪还在啃空气");
+        double afterFall = tower.towerHealth();
+        for (int tick = 0; tick < 45; tick++)
+        {
+            goal.tick();
+        }
+        check(failures, tower.towerHealth() == afterFall, "塔没了之后血量池还在被扣（" + afterFall + "→"
+                + tower.towerHealth() + "）");
+
+        hitter.setPos(towerPos.getX() + 60.0D, towerPos.getY(), towerPos.getZ() + 0.5D);
+        check(failures, !goal.canUse(), "怪出了结界（离塔 60 格）之后 goal 还开着，它会一路追到别人家去");
+
+        // share=0 那一支：一只都不该去拆塔，且必须退回锁玩家（否则场上全是木头人）
+        DefenseDefinition none = new DefenseDefinition();
+        none.wardRadius = ward;
+        none.towerFocusShare = 0.0D;
+        net.minecraft.world.entity.monster.Vindicator idle =
+                new net.minecraft.world.entity.monster.Vindicator(EntityType.VINDICATOR, arena);
+        idle.setPos(towerPos.getX() + 1.0D, towerPos.getY(), towerPos.getZ() + 0.5D);
+        arena.addFreshEntity(idle);
+        check(failures, TrialManager.assignDefenseFocus(idle, none, session, null,
+                        net.minecraft.util.RandomSource.create(2L)) == DefenseFocus.PLAYER,
+                "share=0 时应全部归给打人那支");
+        int extra = 0;
+        for (net.minecraft.world.entity.ai.goal.WrappedGoal wrapped : idle.goalSelector.getAvailableGoals())
+        {
+            if (wrapped.getGoal() instanceof com.trialportal.arena.TowerAssaultGoal)
+            {
+                extra++;
+            }
+        }
+        check(failures, extra == 0, "share=0 却还挂了 " + extra + " 个拆塔 goal");
+
+        hitter.discard();
+        idle.discard();
+        com.trialportal.arena.ArenaService.releaseCellAt(arena, cell, 0, new net.minecraft.world.phys.AABB(
+                origin.getX() - ward - 1, origin.getY(), origin.getZ() - ward - 1,
+                origin.getX() + ward + 2, origin.getY() + com.trialportal.arena.ArenaService.fenceHeight() + 2,
+                origin.getZ() + ward + 2));
+        manager.freeCell(owner);
     }
 
     /**
      * 配方只有从 {@code RecipeManager} 里真取出来才算数：JSON 写坏或 id 打错时，原版加载器会把整条配方
      * 丢掉而游戏照跑——玩家那边只是"这个门怎么也合不出来"，一声不响。
      * 输入项还得逐个能匹配到某个已注册物品：id 写错时原版会把它当成空气，配方加载得成却永远摆不出来。
+     * <p>
+     * 2026-10-10 裁定把方向翻了（§9 第 12 条）：三个玩法门与结界塔退回创造栏，进出大厅收拢成往返门
+     * 这一条通道。所以这张账两头都要钉——<b>谁一条都不许有</b>，<b>谁必须恰好一条</b>。
+     * 只钉后一半的话，哪天又冒出一条玩法门配方没人知道；只钉前一半，通道自己反倒合不出来。
      */
-    private static void probePortalRecipes(MinecraftServer server, List<String> failures)
+    private static void probePassageRecipes(MinecraftServer server, List<String> failures)
     {
-        Map<TrialMode, String> craftableByMode = new java.util.EnumMap<>(TrialMode.class);
+        List<String> leaked = new ArrayList<>();
+        List<String> passage = new ArrayList<>();
         List<String> unsatisfiable = new ArrayList<>();
-        List<String> blind = new ArrayList<>();
         for (net.minecraft.world.item.crafting.Recipe<?> recipe : server.getRecipeManager()
                 .getAllRecipesFor(net.minecraft.world.item.crafting.RecipeType.CRAFTING))
         {
             ItemStack result = recipe.getResultItem(server.registryAccess());
-            if (!(result.getItem() instanceof net.minecraft.world.item.BlockItem blockItem)
-                    || !(blockItem.getBlock() instanceof TrialPortalBlock portal))
+            if (!(result.getItem() instanceof net.minecraft.world.item.BlockItem blockItem))
             {
                 continue;
             }
-            craftableByMode.put(portal.mode(), recipe.getId() + " ⇒ " + result.getItem());
+            net.minecraft.world.level.block.Block block = blockItem.getBlock();
+            if (block instanceof TrialPortalBlock || block instanceof com.trialportal.block.WardPylonBlock)
+            {
+                leaked.add(recipe.getId() + " ⇒ " + result.getItem());
+                continue;
+            }
+            if (!(block instanceof com.trialportal.block.ArenaExitBlock))
+            {
+                continue;
+            }
+            passage.add(recipe.getId() + " ⇒ " + result.getItem());
             NonNullList<Ingredient> ingredients = recipe.getIngredients();
             if (ingredients.isEmpty())
             {
-                blind.add(portal.mode().name());
+                unsatisfiable.add("往返门的配方取不到输入项，输入项判据会在假数据上跑绿");
                 continue;
             }
             for (Ingredient ingredient : ingredients)
@@ -1359,24 +2392,35 @@ public final class TrialSelfTest
                 String defect = ingredientDefect(ingredient, server.registryAccess());
                 if (defect != null)
                 {
-                    unsatisfiable.add(portal.mode() + "：" + defect);
+                    unsatisfiable.add("往返门：" + defect);
                 }
             }
         }
-        check(failures, blind.isEmpty(),
-                "这些玩法门的配方取不到输入项，输入项判据会在假数据上跑绿：" + blind);
+        check(failures, leaked.isEmpty(),
+                "这些方块按裁定不该有任何生存配方（入口只有往返门一条，玩法门退回创造栏）：" + leaked);
+        check(failures, passage.size() == 1,
+                "大厅与野外之间唯一的通道必须有恰好一条生存配方，实际 " + passage.size() + " 条 " + passage
+                        + "（一条没有=只能靠创造栏或 /give；多于一条=同一件事两份配方，改哪份都漏一份）");
         check(failures, unsatisfiable.isEmpty(), String.join("；", unsatisfiable)
-                + "（写错的 tag 就是这个样子：配方加载得成，却永远摆不出来）");
-        List<String> missing = new ArrayList<>();
-        for (TrialMode mode : TrialMode.values())
-        {
-            if (!craftableByMode.containsKey(mode))
-            {
-                missing.add(mode.name());
-            }
-        }
-        check(failures, missing.isEmpty(),
-                "这些玩法门没有生存配方，只能靠创造栏或 /give：" + missing + "（已配 " + craftableByMode + "）");
+                + "（写错的 id 就是这个样子：配方加载得成，却永远摆不出来）");
+    }
+
+    /**
+     * 通道的方向是纯判定，无头门跑得动：野外那台把人送进去，场地里那台把人送出来。
+     * 最后一条钉的是这两条判据的立足点——两个方向若依据同一个恒真/恒假的谓词，前面两条就只是
+     * 同一条断言换了个写法，方向写反也照绿（TOOTHLESS 抓的就是这个形状）。
+     */
+    private static void probeReturnPassage(List<String> failures)
+    {
+        check(failures, com.trialportal.block.ArenaExitBlock.passageFor(Level.OVERWORLD)
+                        == com.trialportal.block.ArenaExitBlock.Passage.ENTER_LOBBY,
+                "野外的往返门没有指向大厅（点它进不去大厅）");
+        check(failures, com.trialportal.block.ArenaExitBlock.passageFor(ArenaService.ARENA)
+                        == com.trialportal.block.ArenaExitBlock.Passage.RETURN_HOME,
+                "场地里的往返门没有指向离场（点它不回家，会话与攒的奖励都结不掉）");
+        check(failures, !ArenaService.isArena(Level.OVERWORLD) && ArenaService.isArena(ArenaService.ARENA),
+                "isArena 在野外与场地两个维度键上返回同一个值——上面两条方向判据其实是同一条断言的两种写法，"
+                        + "抓不到「方向写反」");
     }
 
     /**
