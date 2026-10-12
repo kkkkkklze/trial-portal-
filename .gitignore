@@ -36,3 +36,9 @@ dist/
 
 # 整合包专用叠加层（本机内容，引用的实体 ID 只在那个整合包里存在；用 tools/census_to_pack.py --overlay 重新生成）
 packOverlays/
+
+# 整合包怪物表：由 verify-logs/make_mob_table_doc.py 从普查文件重跑生成，
+# 里面点到 11 个第三方模组名与 100 层实体 id，等于作者这套包的构成清单——
+# 所以它**不进 git、不进公开仓**，但**照旧进交接包**（tools/make-dist.py 的 include_dirs docs 会带上它，
+# 且 scrub 表把整合包名换成中性标签）。接手人拿到的是包，克隆公开仓的人拿到的是复跑说明。
+docs/附表-整合包怪物血量表.md

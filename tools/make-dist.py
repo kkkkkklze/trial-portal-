@@ -132,6 +132,10 @@ CONFIG = {
     # the file's text. Only these files are touched, and only inside the archive.
     "scrub": {
         "docs/开发文档.md": "personal_local_refs",
+        "docs/方法论-整合包真机验证与分发.md": "personal_local_refs",
+        # 怪物表正文里照实写了整合包名（它是这份表的来源说明），进包时换成中性标签；
+        # 实体 id 与实测数值**不**脱敏——那正是接手人要复跑流水线需要的东西。
+        "docs/附表-整合包怪物血量表.md": "personal_local_refs",
         "README.md": "personal_local_refs",
         "tools/census_to_pack.py": "personal_local_refs",
     },
