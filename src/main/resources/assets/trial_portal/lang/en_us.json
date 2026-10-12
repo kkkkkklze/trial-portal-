@@ -6,5 +6,7 @@
   "block.trial_portal.arena_exit": "Trial Gateway",
   "screen.trial_portal.challenge_picker": "Choose a challenge",
   "screen.trial_portal.challenge_picker_empty": "no challenge definitions in challenges/",
+  "screen.trial_portal.defense_picker": "Choose a defense stage",
+  "screen.trial_portal.defense_picker_empty": "no defense stages in defenses/",
   "block.trial_portal.ward_pylon": "Ward Pylon"
 }

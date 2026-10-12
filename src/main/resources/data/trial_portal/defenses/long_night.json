@@ -1,0 +1,77 @@
+{
+  "comment": "守塔第三关：长夜围城。塔厚但波数多，考验的是续航——每一波的强度都在上一层的基础上叠",
+  "display_name": "长夜围城",
+  "icon_item": "minecraft:nether_star",
+  "order": 30,
+  "ward_radius": 24,
+  "tower_health": 640.0,
+  "intermission_ticks": 200,
+  "tower_focus_share": 0.45,
+  "tower_damage_per_hit": 3.0,
+  "tower_hit_interval_ticks": 20,
+  "strength": { "health_multiplier": 1.2, "damage_multiplier": 1.15, "armor_bonus": 2.0 },
+  "waves": [
+    {
+      "title": "第 1 波 · 试探",
+      "mobs": [
+        { "entity": "minecraft:zombie", "count": 4 },
+        { "entity": "minecraft:skeleton", "count": 2 }
+      ]
+    },
+    {
+      "title": "第 2 波 · 缠腿",
+      "mobs": [
+        { "entity": "minecraft:spider", "count": 4 },
+        { "entity": "minecraft:cave_spider", "count": 3 }
+      ],
+      "strength": { "speed_multiplier": 1.2 }
+    },
+    {
+      "title": "第 3 波 · 火矢",
+      "mobs": [
+        { "entity": "minecraft:skeleton", "count": 5 },
+        { "entity": "minecraft:blaze", "count": 2, "malice_level": 0 }
+      ],
+      "intermission_ticks": 180
+    },
+    {
+      "title": "第 4 波 · 破城槌",
+      "mobs": [
+        { "entity": "minecraft:creeper", "count": 4 },
+        { "entity": "minecraft:zombie", "count": 4 }
+      ]
+    },
+    {
+      "title": "第 5 波 · 术士",
+      "mobs": [
+        { "entity": "minecraft:witch", "count": 3 },
+        { "entity": "minecraft:vindicator", "count": 3 },
+        { "entity": "minecraft:enderman", "count": 2 }
+      ],
+      "strength": { "health_multiplier": 1.15 }
+    },
+    {
+      "title": "第 6 波 · 铁骑",
+      "mobs": [
+        { "entity": "minecraft:ravager", "count": 2, "boss": true },
+        { "entity": "minecraft:pillager", "count": 6 }
+      ],
+      "rewards": [ { "item": "minecraft:golden_apple", "count": 2 } ]
+    },
+    {
+      "title": "第 7 波 · 天亮之前",
+      "mobs": [
+        { "entity": "minecraft:evoker", "count": 1, "boss": true },
+        { "entity": "minecraft:vindicator", "count": 4 },
+        { "entity": "minecraft:skeleton", "count": 4 }
+      ],
+      "rewards": [ { "item": "minecraft:enchanted_golden_apple", "count": 1 } ]
+    }
+  ],
+  "rewards": [
+    { "item": "minecraft:diamond", "count": 2 },
+    { "item": "minecraft:iron_ingot", "count": 8 },
+    { "item": "minecraft:bread", "count": 6 }
+  ],
+  "boss_affix_pool": [ "trial_portal:crusher", "trial_portal:bulwark", "trial_portal:thorns", "trial_portal:anti_armor", "trial_portal:runner" ]
+}

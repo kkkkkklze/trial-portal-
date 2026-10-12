@@ -1,0 +1,10 @@
+{
+  "replace": false,
+  "values": [
+    "trial_portal:arena_exit",
+    "trial_portal:challenge_portal",
+    "trial_portal:tower_portal",
+    "trial_portal:trial_portal",
+    "trial_portal:ward_pylon"
+  ]
+}

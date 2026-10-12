@@ -16,13 +16,16 @@ import net.minecraftforge.registries.ForgeRegistries;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.Consumer;
 
 /**
- * 副本选择界面：左边一列**可滚动**的副本列表（关卡多了也放得下），右边三档难度，下面确认。
+ * 玩法选单：左边一列<b>可滚动</b>的清单（关卡多了也放得下），右边那一列是该玩法的可选项——
+ * 闯关是难度档（浅层/中层/深层），守塔没有可选项，槽位数按清单里最大的那份算，
+ * 两种玩法走同一份代码、同一套编解码。
  * <p>
  * 刻意只用原版件（{@link AbstractSelectionList} + {@link Button} + 自带字体 + 物品图标），
  * 面板底纹直接用平台那种黑石砖方块贴图——不新增资产，也不引任何 UI 库。
+ * <p>
+ * 类名还留着 Challenge：它现在也服务守塔，改名要删一份被 git 跟踪的文件（记在开发文档 §10 的待办里）。
  */
 public class ChallengePickerScreen extends Screen
 {
@@ -33,33 +36,61 @@ public class ChallengePickerScreen extends Screen
     private static final int PANEL_HEIGHT = 168;
     private static final int LIST_WIDTH = 132;
     private static final int ROW_HEIGHT = 22;
-    /**
-     * 界面上的难度槽位数。键不再由客户端猜：服务端把 (key, label) 成对下发（{@link TrialNetwork.Option}），
-     * 这里只负责"第几个槽显示哪个 label、点它就回传它的 key"。
-     */
-    private static final int DIFFICULTY_SLOTS = 3;
+    /** 右侧那一列可选项按钮的位置（清单窄了才放得下）。 */
+    private static final int OPTION_BUTTON_X = 152;
+    private static final int OPTION_BUTTON_WIDTH = 72;
+    /** 可选项槽位上限：数据里写了更多档也只画这么多，多余的读不到（ presently 三档）。 */
+    private static final int MAX_OPTION_SLOTS = 8;
 
+    private final TrialNetwork.OpenPicker picker;
     private final List<TrialNetwork.Entry> entries;
+    private final int optionSlots;
     private int selected;
-    private int difficulty;
+    private int optionIndex;
     private ChallengeList list;
-    private final Button[] difficultyButtons = new Button[DIFFICULTY_SLOTS];
+    private final Button[] optionButtons = new Button[MAX_OPTION_SLOTS];
 
-    public ChallengePickerScreen(List<TrialNetwork.Entry> entries)
+    public ChallengePickerScreen(TrialNetwork.OpenPicker picker)
     {
-        super(Component.translatable("screen.trial_portal.challenge_picker"));
-        this.entries = new ArrayList<>(entries);
+        super(Component.translatable(titleKey(picker.kind())));
+        this.picker = picker;
+        this.entries = new ArrayList<>(picker.entries());
+        int widest = 0;
+        for (TrialNetwork.Entry entry : this.entries)
+        {
+            widest = Math.max(widest, entry.options().size());
+        }
+        this.optionSlots = Math.min(widest, MAX_OPTION_SLOTS);
         if (this.entries.isEmpty())
         {
-            this.entries.add(new TrialNetwork.Entry("", Component.translatable(
-                    "screen.trial_portal.challenge_picker.empty").getString(), "minecraft:barrier", 0, List.of()));
+            this.entries.add(new TrialNetwork.Entry("", Component.translatable(emptyKey(picker.kind())).getString(),
+                    "minecraft:barrier", "", List.of()));
         }
     }
 
-    /** 收到 S2C 清单包后由网络层调用：必须在客户端线程上开界面。 */
-    public static void show(List<TrialNetwork.Entry> entries)
+    /**
+     * 标题键按玩法分：守塔那张写「选择资源副本」就是把话说错。
+     * 键写成完整字面量而不是拼出来——语言键门（TrialDataCheck#checkLangKeys）只认得字面量，
+     * 拼出来的键名会同时骗过「定义了没人用」和「用了没定义」两侧。
+     */
+    static String titleKey(TrialNetwork.Kind kind)
     {
-        Minecraft.getInstance().setScreen(new ChallengePickerScreen(entries));
+        return kind == TrialNetwork.Kind.DEFENSE
+                ? "screen.trial_portal.defense_picker"
+                : "screen.trial_portal.challenge_picker";
+    }
+
+    static String emptyKey(TrialNetwork.Kind kind)
+    {
+        return kind == TrialNetwork.Kind.DEFENSE
+                ? "screen.trial_portal.defense_picker_empty"
+                : "screen.trial_portal.challenge_picker_empty";
+    }
+
+    /** 收到 S2C 清单包后由网络层调用：必须在客户端线程上开界面。 */
+    public static void show(TrialNetwork.OpenPicker picker)
+    {
+        Minecraft.getInstance().setScreen(new ChallengePickerScreen(picker));
     }
 
     @Override
@@ -79,15 +110,15 @@ public class ChallengePickerScreen extends Screen
         this.list.refreshSelectedState(this.selected);
         this.addRenderableWidget(this.list);
 
-        for (int i = 0; i < DIFFICULTY_SLOTS; i++)
+        for (int i = 0; i < this.optionSlots; i++)
         {
             final int index = i;
-            Button button = Button.builder(Component.empty(), pressed -> this.difficulty = index)
-                    .bounds(left + 152, listTop + 2 + i * 22, 72, 20).build();
-            this.difficultyButtons[i] = button;
+            Button button = Button.builder(Component.empty(), pressed -> this.optionIndex = index)
+                    .bounds(left + OPTION_BUTTON_X, listTop + 2 + i * 22, OPTION_BUTTON_WIDTH, 20).build();
+            this.optionButtons[i] = button;
             this.addRenderableWidget(button);
         }
-        refreshDifficulties();
+        refreshOptions();
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, pressed -> confirm())
                 .bounds(left + PANEL_WIDTH - 84, top + PANEL_HEIGHT - 26, 72, 20).build());
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_CANCEL, pressed -> this.onClose())
@@ -98,41 +129,47 @@ public class ChallengePickerScreen extends Screen
     {
         this.selected = index;
         this.list.refreshSelectedState(index);
-        refreshDifficulties();
+        refreshOptions();
     }
 
     /**
-     * 难度按钮的文案与可点状态跟着当前副本走（每份副本可以给自己起「浅层/中层/深层」这种名字）。
+     * 可选项按钮的文案与可点状态跟着当前行走（每份副本可以给自己起「浅层/中层/深层」这种名字）。
      * 只改按钮本身、不重建整屏——重建会把列表的滚动位置丢掉。
      */
-    private void refreshDifficulties()
+    private void refreshOptions()
     {
-        TrialNetwork.Entry entry = current();
-        List<TrialNetwork.Option> options = entry.difficulties();
-        this.difficulty = Math.max(0, Math.min(this.difficulty, options.size() - 1));
-        for (int i = 0; i < this.difficultyButtons.length; i++)
+        List<TrialNetwork.Option> options = current().options();
+        this.optionIndex = Math.max(0, Math.min(this.optionIndex, options.size() - 1));
+        for (int i = 0; i < this.optionSlots; i++)
         {
+            Button button = this.optionButtons[i];
             boolean present = i < options.size();
-            Button button = this.difficultyButtons[i];
             button.setMessage(Component.literal(present ? options.get(i).label() : "-"));
-            button.active = present && !entry.id().isEmpty();
+            button.active = present && !current().id().isEmpty();
         }
     }
 
-    /** 摘要行显示的难度名。 */
-    private String difficultyLabel()
+    /** 摘要行显示的可选项名；没有可选项的玩法返回空串，摘要行自己决定要不要加分隔点。 */
+    private String optionLabel()
     {
-        List<TrialNetwork.Option> options = current().difficulties();
-        return this.difficulty < options.size() ? options.get(this.difficulty).label() : "-";
+        List<TrialNetwork.Option> options = current().options();
+        return this.optionIndex < options.size() ? options.get(this.optionIndex).label() : "";
     }
 
     private void confirm()
     {
         TrialNetwork.Entry chosen = current();
-        List<TrialNetwork.Option> options = chosen.difficulties();
-        if (!chosen.id().isEmpty() && this.difficulty < options.size())
+        if (!TrialNetwork.confirmable(this.picker.kind(), chosen, this.optionIndex))
         {
-            TrialNetwork.requestStart(chosen.id(), options.get(this.difficulty).key());
+            return; // 空 ID（清单为空那行的占位）或还没选到一档：不发包，也不假装开局
+        }
+        if (this.picker.kind() == TrialNetwork.Kind.DEFENSE)
+        {
+            TrialNetwork.requestStartDefense(chosen.id());
+        }
+        else
+        {
+            TrialNetwork.requestStart(chosen.id(), chosen.options().get(this.optionIndex).key());
         }
         this.onClose();
     }
@@ -161,8 +198,9 @@ public class ChallengePickerScreen extends Screen
             graphics.drawCenteredString(this.font, entry.name(), left + PANEL_WIDTH / 2, top + 60, 0xFFB0B0);
             return;
         }
-        graphics.drawString(this.font, entry.name() + " · " + difficultyLabel()
-                        + " · 时限 " + entry.seconds() + " 秒", left + 12, top + PANEL_HEIGHT - 46, 0xE0E0E0, true);
+        String option = optionLabel();
+        graphics.drawString(this.font, entry.name() + (option.isEmpty() ? "" : " · " + option)
+                        + " · " + entry.detail(), left + 12, top + PANEL_HEIGHT - 46, 0xE0E0E0, true);
         graphics.drawString(this.font, "滚轮翻页 · 左键选择", left + 12, top + PANEL_HEIGHT - 34, 0x909090);
     }
 
@@ -173,12 +211,12 @@ public class ChallengePickerScreen extends Screen
         return item == null ? Items.AIR : item;
     }
 
-    /** 左列：可滚动的副本列表。 */
+    /** 左列：可滚动的清单。 */
     private static class ChallengeList extends AbstractSelectionList<ChallengeList.Row>
     {
-        private final Consumer<Row> onPick;
+        private final java.util.function.Consumer<Row> onPick;
 
-        ChallengeList(Minecraft minecraft, int y0, int y1, Consumer<Row> onPick)
+        ChallengeList(Minecraft minecraft, int y0, int y1, java.util.function.Consumer<Row> onPick)
         {
             super(minecraft, LIST_WIDTH, y1 - y0, y0, y1, ROW_HEIGHT);
             this.onPick = onPick;
@@ -234,11 +272,6 @@ public class ChallengePickerScreen extends Screen
             {
                 this.data = data;
                 this.index = index;
-            }
-
-            TrialNetwork.Entry data()
-            {
-                return this.data;
             }
 
             int index()

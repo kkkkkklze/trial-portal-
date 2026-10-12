@@ -61,6 +61,21 @@ public final class ArenaService
 
     private static final List<PendingRelease> PENDING_RELEASES = new ArrayList<>();
 
+    /**
+     * 停服时清空待拆队列。这些条目记的是<b>上一局那个存档</b>的坐标与隔间编号，而本表是进程级 static：
+     * 不清就会在换档重开后被 {@code tickPendingReleases} 当成自己的活儿去做——在新档的 arena 里按旧坐标
+     * 扫怪、解强制加载、把编号还给一个不存在的会话，最后留下一间没人认领的孤儿平台。
+     */
+    public static void clearPendingReleases()
+    {
+        int dropped = PENDING_RELEASES.size();
+        PENDING_RELEASES.clear();
+        if (dropped > 0)
+        {
+            LOGGER.info("[trial_portal] 停服：丢弃 {} 条未完成的隔间拆除记账（上一局的坐标，不该带到新档）", dropped);
+        }
+    }
+
     private ArenaService() {}
 
     @Nullable
@@ -77,6 +92,17 @@ public final class ArenaService
     public static boolean isInArena(ServerPlayer player)
     {
         return isArena(player.level().dimension());
+    }
+
+    /**
+     * 「没有回返记录」这一跳该不该整个取消。纯判定，无头门跑得动：
+     * 只有<b>人已经不在场地里</b>又没有记录时才跳过——那时他本来就在外面，第二跳把人甩去世界出生点
+     * 是帮倒忙（真实触发形状：卡顿时客户端连发两个右键包，第一跳已经消费掉回返点并把他送回家）。
+     * 反过来，人还在场地里又没有记录，就必须兜底送回世界出生点，不然他被困在一个没铺平台的维度里。
+     */
+    public static boolean skipReturnJump(@Nullable TrialManager.HomePos home, ResourceKey<Level> current)
+    {
+        return home == null && !isArena(current);
     }
 
     public static int radius()
@@ -350,6 +376,14 @@ public final class ArenaService
         int cell = manager.cellOf(uuid);
         // 先把人送走再拆台：反过来会让玩家站在被抽掉平台的虚空里掉死
         ServerLevel target = home == null ? null : player.server.getLevel(home.dimension());
+        if (target == null && skipReturnJump(home, player.level().dimension()))
+        {
+            // 人已经不在场地里，又没有回返记录——十有八九是卡顿时的第二次点击包（第一跳已经把回返点消费掉了）。
+            // 这一跳什么都不做：把人甩去世界出生点是"在场地里出不来"那条兜底，不是给这种情形的。
+            LOGGER.warn("[trial_portal] {} 不在场地里又没有回返记录，取消这一跳（不把人挪去世界出生点）",
+                    player.getScoreboardName());
+            return;
+        }
         if (target == null)
         {
             target = player.server.overworld();

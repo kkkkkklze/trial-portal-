@@ -162,6 +162,7 @@ public class DefenseDefinition
             cloned.count = entry.count;
             cloned.nbt = entry.nbt;
             cloned.boss = entry.boss;
+            cloned.maliceLevel = entry.maliceLevel;
             cloned.strength = entry.strength == null ? null : copyStrength(entry.strength);
             copy.mobs.add(cloned);
         }

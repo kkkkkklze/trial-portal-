@@ -1,6 +1,7 @@
 package com.trialportal.block;
 
 import com.trialportal.arena.ArenaService;
+import com.trialportal.trial.TrialEvents;
 import com.trialportal.trial.TrialManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
@@ -48,6 +49,11 @@ public class ArenaExitBlock extends Block
         if (level.isClientSide || !(player instanceof ServerPlayer serverPlayer))
         {
             return level.isClientSide ? InteractionResult.SUCCESS : InteractionResult.PASS;
+        }
+        if (!TrialEvents.playerInitiated(player))
+        {
+            // 自动机能右键这台门，就等于能把一个真人传进场地——这条必须挡住
+            return InteractionResult.PASS;
         }
         if (passageFor(level.dimension()) == Passage.ENTER_LOBBY)
         {

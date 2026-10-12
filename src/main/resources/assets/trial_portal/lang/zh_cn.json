@@ -6,5 +6,7 @@
   "block.trial_portal.arena_exit": "星罗·试炼往返门",
   "screen.trial_portal.challenge_picker": "选择资源副本",
   "screen.trial_portal.challenge_picker_empty": "challenges/ 里还没有副本定义",
+  "screen.trial_portal.defense_picker": "选择守塔关卡",
+  "screen.trial_portal.defense_picker_empty": "defenses/ 里还没有守塔定义",
   "block.trial_portal.ward_pylon": "守塔之枢"
 }

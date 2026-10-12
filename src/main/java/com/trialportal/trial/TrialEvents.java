@@ -11,6 +11,7 @@ import net.minecraftforge.event.level.BlockEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * 事件转发：服务端 tick 驱动状态机，玩家死亡走各模式的失败分支。
@@ -30,6 +31,9 @@ public final class TrialEvents
         }
         MinecraftServer server = event.getServer();
         TrialManager.get(server).tick(server);
+        // 恶意联动的落笔放在玩法 tick 之后：怪是在上面那一跳（服务端 tick 的末尾）生成的，
+        // 它要等下一个 tick 的实体 tick 才被它那侧初始化好——所以队列会留一拍，那是设计而不是漏。
+        MaliceLink.tick();
         // 先接落难的人再收孤儿隔间：反过来 tickPendingReleases 会把回返点 takeHome 走，
         // 那个人就只能被丢去世界出生点，而不是他进门前站的地方。
         ArenaService.rescueStrandedPlayers(server);
@@ -107,27 +111,68 @@ public final class TrialEvents
      * 提供两个独立开关（javadoc：本事件控制 {@code onItemUseFirst}/{@code Block#use}/{@code Item#useOn}
      * 谁被调用；取消整个事件则三者都不调用），所以对功能方块只拒"用手里的物品"、放行"用这个方块"。
      * 两侧都要设，客户端服务端不一致会不同步。
+     * <p>
+     * 这里<b>不按维度筛</b>：往返门与玩法门现在都能出现在野外，野外那一半和场地里那一半是同一条契约。
+     * 以前这条判据只挂在场地维度上，于是"昨天刚给往返门加了配方、今天它在野外手持方块时就点不动"——
+     * 修了场地那一半不等于修了这个方块。
      */
     @SubscribeEvent
     public static void onRightClickBlock(net.minecraftforge.event.entity.player.PlayerInteractEvent.RightClickBlock event)
     {
-        net.minecraft.world.level.Level level = event.getLevel();
-        if (!ArenaService.isArena(level.dimension()))
-        {
-            return;
-        }
-        if (keepsBlockUse(level.getBlockState(event.getPos())))
+        RightClickPlan plan = planFor(event.getLevel().getBlockState(event.getPos()));
+        if (plan.denyItem())
         {
             event.setUseItem(net.minecraftforge.event.entity.player.PlayerInteractEvent.Result.DENY);
         }
+        if (plan.allowBlock())
+        {
+            event.setUseBlock(net.minecraftforge.event.entity.player.PlayerInteractEvent.Result.ALLOW);
+        }
     }
 
-    /** 哪些方块"宁可不让手里的物品出手，也要把右键留给方块自己"——只有自家三种功能终端。 */
+    /** 右键落在一个方块上时，Forge 那两个独立开关各要怎么设。{@code NONE} = 完全不插手。 */
+    public record RightClickPlan(boolean denyItem, boolean allowBlock)
+    {
+        static final RightClickPlan NONE = new RightClickPlan(false, false);
+        static final RightClickPlan OURS = new RightClickPlan(true, true);
+    }
+
+    /**
+     * 判定只吃方块状态——不吃维度。这正是这条修复的关键：往返门与玩法门现在两边都会出现，
+     * 上一版把判据挂在"在场地维度里"这一条上，于是野外的往返门没人管（手持方块就点不动它）。
+     */
+    static RightClickPlan planFor(net.minecraft.world.level.block.state.BlockState state)
+    {
+        return keepsBlockUse(state) ? RightClickPlan.OURS : RightClickPlan.NONE;
+    }
+
+    /** 哪些方块"宁可不让手里的物品出手，也要把右键留给方块自己"——只有自家四种功能终端。 */
     static boolean keepsBlockUse(net.minecraft.world.level.block.state.BlockState state)
     {
         net.minecraft.world.level.block.Block block = state.getBlock();
         return block instanceof com.trialportal.block.TrialPortalBlock
                 || block instanceof com.trialportal.block.ArenaExitBlock
                 || block instanceof com.trialportal.block.WardPylonBlock;
+    }
+
+    /**
+     * 交互必须由真人发起。发射器、机器人、各类 {@code FakePlayer} 走的是同一套事件，
+     * 而这三类方块的效果是把<b>人传走</b>或替人开局——自动机不该有这种能力（也会被用来无限撑大回返点表）。
+     */
+    public static boolean playerInitiated(@Nullable net.minecraft.world.entity.player.Player player)
+    {
+        return player != null && !(player instanceof net.minecraftforge.common.util.FakePlayer);
+    }
+
+    /**
+     * 停服必须清空待拆隔间的队列：它是进程级 static，换存档重开时上一局的坐标还在，
+     * 于是新档里同 UUID 的玩家会在旧坐标上被扫怪 / 解强制加载 / 释放编号——留下一间没人认领的孤儿平台。
+     */
+    @SubscribeEvent
+    public static void onServerStopping(net.minecraftforge.event.server.ServerStoppingEvent event)
+    {
+        ArenaService.clearPendingReleases();
+        // 恶意那条队列按 UUID 存着活的实体引用，关服时清空，别留到下一局
+        MaliceLink.clearPending();
     }
 }

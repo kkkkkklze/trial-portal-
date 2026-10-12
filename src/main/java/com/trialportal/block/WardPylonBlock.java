@@ -27,7 +27,7 @@ import org.jetbrains.annotations.Nullable;
  * 按裁定它<b>没有合成配方</b>（§9 第 11 条④）——只作为结构件由场地摆放，创造栏里可以拿。
  * 这条"不许有配方"在自测里有反向断言，谁哪天补一份配方会被门拦住。
  */
-public class WardPylonBlock extends BaseEntityBlock implements SneakInteractBlock
+public class WardPylonBlock extends BaseEntityBlock
 {
     public WardPylonBlock(BlockBehaviour.Properties properties)
     {
@@ -55,6 +55,11 @@ public class WardPylonBlock extends BaseEntityBlock implements SneakInteractBloc
         {
             return InteractionResult.SUCCESS;
         }
+        if (!com.trialportal.trial.TrialEvents.playerInitiated(player))
+        {
+            // 发射器 / 机器人 / FakePlayer 走的也是这套右键事件，但它们不该替真人开局
+            return InteractionResult.PASS;
+        }
         if (hand != InteractionHand.MAIN_HAND || !(player instanceof
                 net.minecraft.server.level.ServerPlayer serverPlayer))
         {
@@ -77,14 +82,35 @@ public class WardPylonBlock extends BaseEntityBlock implements SneakInteractBloc
             TrialFeedback.actionbar(serverPlayer, "开始守塔请直接右键（潜行右键是提示）");
             return InteractionResult.CONSUME;
         }
-        DefenseDefinition defense = DefenseLibrary.first();
-        if (defense == null)
+        switch (entryActionFor(DefenseLibrary.ordered().size()))
         {
-            TrialFeedback.failure(serverPlayer, "defenses/ 里没有可用的守塔定义，开不了局");
-            return InteractionResult.CONSUME;
+            case OPEN_PICKER -> com.trialportal.network.TrialNetwork.openDefensePicker(serverPlayer);
+            case START_FIRST -> {
+                DefenseDefinition only = DefenseLibrary.first();
+                if (only != null)
+                {
+                    com.trialportal.arena.ArenaService.beginDefense(serverPlayer, only);
+                }
+            }
+            case NOTHING -> TrialFeedback.failure(serverPlayer, "defenses/ 里没有可用的守塔定义，开不了局");
         }
-        com.trialportal.arena.ArenaService.beginDefense(serverPlayer, defense);
         return InteractionResult.CONSUME;
+    }
+
+    /** 塔在大厅时右键做什么，只看数据里有几场守塔：一场就别多问一句，多场才弹选单。 */
+    public enum EntryAction
+    {
+        NOTHING, START_FIRST, OPEN_PICKER
+    }
+
+    /** 公开给自测：这是一条纯判决，门的断言直接钉它，不需要玩家在场。 */
+    public static EntryAction entryActionFor(int defenseCount)
+    {
+        if (defenseCount <= 0)
+        {
+            return EntryAction.NOTHING;
+        }
+        return defenseCount == 1 ? EntryAction.START_FIRST : EntryAction.OPEN_PICKER;
     }
 
     private static void reportStatus(net.minecraft.server.level.ServerPlayer player, WardPylonBlockEntity pylon)

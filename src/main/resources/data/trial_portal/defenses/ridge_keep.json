@@ -1,0 +1,58 @@
+{
+  "comment": "守塔第二关：塔薄、拆得快，逼玩家把怪从塔边引开。结界比第一关大一圈，怪从更外缘压进来",
+  "display_name": "碎石烽塔",
+  "icon_item": "minecraft:campfire",
+  "order": 20,
+  "ward_radius": 20,
+  "tower_health": 200.0,
+  "intermission_ticks": 180,
+  "tower_focus_share": 0.65,
+  "tower_damage_per_hit": 6.0,
+  "tower_hit_interval_ticks": 16,
+  "strength": { "health_multiplier": 1.15, "damage_multiplier": 1.1 },
+  "waves": [
+    {
+      "title": "第 1 波 · 前锋",
+      "mobs": [
+        { "entity": "minecraft:zombie", "count": 3 },
+        { "entity": "minecraft:spider", "count": 2 }
+      ]
+    },
+    {
+      "title": "第 2 波 · 弓弦",
+      "mobs": [
+        { "entity": "minecraft:skeleton", "count": 4 },
+        { "entity": "minecraft:zombie", "count": 2 }
+      ],
+      "strength": { "speed_multiplier": 1.15 }
+    },
+    {
+      "title": "第 3 波 · 凿墙",
+      "mobs": [
+        { "entity": "minecraft:creeper", "count": 3, "malice_level": 6 },
+        { "entity": "minecraft:cave_spider", "count": 3 }
+      ],
+      "intermission_ticks": 160
+    },
+    {
+      "title": "第 4 波 · 主力",
+      "mobs": [
+        { "entity": "minecraft:evoker", "count": 1, "boss": true },
+        { "entity": "minecraft:witch", "count": 2 }
+      ],
+      "rewards": [ { "item": "minecraft:golden_apple", "count": 2 } ]
+    },
+    {
+      "title": "第 5 波 · 决口",
+      "mobs": [
+        { "entity": "minecraft:ravager", "count": 1, "boss": true },
+        { "entity": "minecraft:pillager", "count": 5 }
+      ]
+    }
+  ],
+  "rewards": [
+    { "item": "minecraft:iron_ingot", "count": 5 },
+    { "item": "minecraft:coal", "count": 4 }
+  ],
+  "boss_affix_pool": [ "trial_portal:crusher", "trial_portal:bulwark", "trial_portal:thorns", "trial_portal:hunter" ]
+}

@@ -1005,6 +1005,9 @@ public class TrialManager extends SavedData
                 {
                     session.aliveMobs.add(mob.getUUID());
                     spawned++;
+                    // 恶意联动排在入世界之后：它那侧的等级是怪第一个 tick 才初始化好的，这里只登记目标值
+                    MaliceLink.onSpawn(mob, MaliceLink.stageIndex(TrialMode.DEFENSE, session.waveIndex, null),
+                            entry.maliceLevel);
                 }
             }
         }
@@ -1204,6 +1207,9 @@ public class TrialManager extends SavedData
             if (level.addFreshEntity(mob))
             {
                 session.aliveMobs.add(mob.getUUID());
+                MaliceLink.onSpawn(mob,
+                        MaliceLink.stageIndex(TrialMode.CHALLENGE, session.waveIndex, session.difficulty),
+                        entry.maliceLevel);
             }
         }
     }
@@ -1351,6 +1357,8 @@ public class TrialManager extends SavedData
             return false;
         }
         session.aliveMobs.add(mob.getUUID());
+        // 试炼按波次、爬塔按层数走阶梯，两者都是 session.waveIndex
+        MaliceLink.onSpawn(mob, MaliceLink.stageIndex(definition.mode, session.waveIndex, null), entry.maliceLevel);
         return true;
     }
 

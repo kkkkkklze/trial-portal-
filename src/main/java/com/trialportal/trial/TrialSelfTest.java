@@ -8,6 +8,7 @@ import com.trialportal.block.TrialPortalBlock;
 import com.trialportal.boss.BossAffix;
 import com.trialportal.boss.BossAffixLibrary;
 import com.trialportal.config.TrialConfig;
+import com.trialportal.network.TrialNetwork;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.NonNullList;
 import net.minecraft.nbt.CompoundTag;
@@ -534,6 +535,8 @@ public final class TrialSelfTest
                     // 拆塔那只怪：分派比例 + goal 真扣血的对账
                     probeTowerAssault(server, arenaLevel, failures);
                     probeHomeSurvivesStartupSweep(server, arenaLevel, failures);
+                    // 三种终端的右键契约：手持方块点得动、能被镐判定、自动机点不动、没回返点不乱甩人
+                    probeTerminalContract(arenaLevel, failures);
                 }
             }
         }
@@ -556,6 +559,12 @@ public final class TrialSelfTest
         probeDefenseSteps(failures);
         // 创造配置口的唯一写入口：坏值回滚、错 id 当场拒、副本不许写穿库
         probeDefenseEdit(server, failures);
+        // 守塔多关卡：清单、塔在三下数各怎么反应、点确认发得出去、v3 线上形状
+        probeDefenseStages(failures);
+        // 恶意（l2hostility）联动：等级怎么算、没装时整条路关死、malice_level 不会被副本吃掉
+        probeMaliceLink(server, failures);
+        // 三个生成点的运行期台账：次数＝真刷出来的只数、序号来源、malice_level 顶没顶掉阶梯
+        probeMaliceWiring(server, arenaLevel, failures);
 
         // 直接执行一遍 /tei trial list：比查指令树里有没有这个名字更硬
         try
@@ -579,6 +588,18 @@ public final class TrialSelfTest
         catch (Exception exception)
         {
             failures.add("/tei defense list 执行失败：" + exception);
+        }
+        // 恶意联动的诊断口也得真能执行：子树没挂上时 brigadier 只返回 0，光查名字查不出来
+        try
+        {
+            int status = server.getCommands()
+                    .performPrefixedCommand(server.createCommandSourceStack(), "tei malice status");
+            check(failures, status == 1,
+                    "/tei malice status 应回报一条结论，实际 " + status + "（子树没挂上时就是 0）");
+        }
+        catch (Exception exception)
+        {
+            failures.add("/tei malice status 执行失败：" + exception);
         }
 
         ServerLevel level = server.overworld();
@@ -2154,6 +2175,398 @@ public final class TrialSelfTest
     }
 
     /**
+     * 守塔多关卡：清单拼得出来吗、零/一/多场时塔分别该怎么反应、选完那一下真发得出去吗、
+     * 线上形状（v3）编解码对得住吗。这一片的验收条件就是「像闯关一样能选关」，
+     * 所以关卡少于两场时判据自己不成立——直接红，不许悄悄当成通过。
+     */
+    private static void probeDefenseStages(List<String> failures)
+    {
+        List<DefenseDefinition> stages = DefenseLibrary.ordered();
+        check(failures, stages.size() >= 2, "defenses/ 只有 " + stages.size()
+                + " 场守塔，「像闯关一样选关」就没有内容可挑（多关卡是这一片的验收条件）");
+
+        // 大厅那座塔的三种反应，各钉一次
+        check(failures, com.trialportal.block.WardPylonBlock.entryActionFor(0)
+                        == com.trialportal.block.WardPylonBlock.EntryAction.NOTHING,
+                "一场守塔都没有时右键必须报错而不是凭空开局");
+        check(failures, com.trialportal.block.WardPylonBlock.entryActionFor(1)
+                        == com.trialportal.block.WardPylonBlock.EntryAction.START_FIRST,
+                "只有一场时不该多问一句——直接开");
+        check(failures, com.trialportal.block.WardPylonBlock.entryActionFor(2)
+                        == com.trialportal.block.WardPylonBlock.EntryAction.OPEN_PICKER,
+                "两场以上必须弹选单，否则玩家永远只能打到排第一的那场");
+        check(failures, com.trialportal.block.WardPylonBlock.entryActionFor(-1)
+                        == com.trialportal.block.WardPylonBlock.EntryAction.NOTHING,
+                "负数场次数要当成「没有」，不许落进开单条那一支");
+
+        TrialNetwork.OpenPicker picker = TrialNetwork.OpenPicker.ofDefenses(stages);
+        check(failures, picker.kind() == TrialNetwork.Kind.DEFENSE, "守塔清单的 kind 必须是 DEFENSE");
+        check(failures, picker.entries().size() == stages.size(),
+                "清单行数 " + picker.entries().size() + " 与库里的关卡数 " + stages.size() + " 对不上");
+        Set<String> names = new HashSet<>();
+        Set<String> details = new HashSet<>();
+        for (TrialNetwork.Entry entry : picker.entries())
+        {
+            check(failures, DefenseLibrary.exists(entry.id()), "清单里出现了库中没有的关卡 " + entry.id());
+            check(failures, entry.options().isEmpty(),
+                    "守塔关卡 " + entry.id() + " 带了 " + entry.options().size()
+                            + " 个可选项：守塔没有难度档，带了就会让玩家以为要选");
+            check(failures, entry.detail().contains("波") && entry.detail().contains("塔血"),
+                    "守塔关卡 " + entry.id() + " 的摘要没交代有几波与塔血（" + entry.detail() + "）");
+            names.add(entry.name());
+            details.add(entry.detail());
+        }
+        check(failures, names.size() == picker.entries().size(),
+                "有几场守塔在界面上同名（去重后 " + names.size() + " 个名字 / "
+                        + picker.entries().size() + " 行）——选单里分不出打的是哪场");
+        check(failures, details.size() == picker.entries().size(),
+                "有几场守塔的摘要一模一样（去重后 " + details.size() + " 种 / " + picker.entries().size()
+                        + " 行）——那等于把同一场写了两遍换了个名字");
+
+        // 点确认的判据：守塔选一行就走，闯关必须选到一档
+        TrialNetwork.Entry defenseRow = picker.entries().isEmpty()
+                ? new TrialNetwork.Entry("trial_portal:x", "x", "minecraft:barrier", "", List.of())
+                : picker.entries().get(0);
+        TrialNetwork.Entry challengeRow = new TrialNetwork.Entry("trial_portal:y", "y", "minecraft:barrier",
+                "时限 60 秒", List.of(new TrialNetwork.Option("easy", "浅层"),
+                        new TrialNetwork.Option("normal", "中层")));
+        check(failures, TrialNetwork.confirmable(TrialNetwork.Kind.DEFENSE, defenseRow, 0),
+                "守塔选了一行却按不下确认——选单会点不动");
+        check(failures, TrialNetwork.confirmable(TrialNetwork.Kind.CHALLENGE, challengeRow, 1),
+                "闯关选到第 2 档应当可确认");
+        check(failures, !TrialNetwork.confirmable(TrialNetwork.Kind.CHALLENGE, challengeRow, 5),
+                "越界的档位必须判不可确认，否则客户端会发一个不存在的 key");
+        check(failures, !TrialNetwork.confirmable(TrialNetwork.Kind.DEFENSE,
+                        new TrialNetwork.Entry("", "空", "minecraft:barrier", "", List.of()), 0),
+                "空 ID（清单为空那行的占位）不许被确认");
+        // 没有可选项的行在闯关形态下也不能确认：kind 说了算，光看 options 空不空会放行一个没选到档的点击
+        check(failures, !TrialNetwork.confirmable(TrialNetwork.Kind.CHALLENGE, defenseRow, 0),
+                "闯关那一支必须按档位数量判，不许因为 options 为空就放行");
+
+        // 线上形状：清单两头各走一遍 encode/decode，字段顺序错了这里就红
+        try
+        {
+            TrialNetwork.OpenPicker back = TrialNetwork.roundTrip(picker);
+            check(failures, picker.equals(back), "守塔清单编解码往返对不上（v3 形状与代码不同步）");
+            TrialNetwork.OpenPicker challenges = TrialNetwork.OpenPicker.ofChallenges(ChallengeLibrary.ordered());
+            check(failures, challenges.equals(TrialNetwork.roundTrip(challenges)), "闯关清单编解码往返对不上");
+            check(failures, challenges.kind() == TrialNetwork.Kind.CHALLENGE, "闯关清单的 kind 必须是 CHALLENGE");
+            for (TrialNetwork.Entry entry : challenges.entries())
+            {
+                check(failures, entry.options().size() == ChallengeDefinition.DIFFICULTY_KEYS.size(),
+                        "闯关 " + entry.id() + " 下发了 " + entry.options().size() + " 档，与三档约定不符");
+                check(failures, !entry.detail().isEmpty(), "闯关 " + entry.id() + " 的摘要是空的");
+            }
+        }
+        catch (Exception exception)
+        {
+            failures.add("清单编解码往返抛异常：" + exception);
+        }
+    }
+
+    /**
+     * 恶意（l2hostility）联动。钉的是<b>该写多少、该不该写</b>这一层——这台 JVM 里没有恶意模组，
+     * 「写进去读不读得回来」只能在整合包里用 /tei malice probe 看（真机那一半记在 §10）。
+     * 三个生成点是否真的调了它，由 checkTrialData 按语句形状扫源码（addFreshEntity 后面必须跟着落笔）。
+     */
+    /**
+     * 三个生成点是否真在开局那一跳里把等级报给联动层——<b>运行期</b>证据，不是源码形状账。
+     * 用真入口各开一场（守塔 / 副本 / 试炼），回读请求台账对三件事的数：
+     * 报的次数＝这一波真刷出来的只数、阶梯序号＝该玩法的序号来源、单只怪写的 malice_level 顶没顶掉阶梯。
+     * 没装恶意的机器上这份台账照样有数——它记的是"我们报了几次"，不是"它改成了几级"。
+     */
+    private static void probeMaliceWiring(MinecraftServer server, ServerLevel arena, List<String> failures)
+    {
+        com.mojang.authlib.GameProfile profile = new com.mojang.authlib.GameProfile(
+                java.util.UUID.nameUUIDFromBytes("trial_portal:selftest:malice"
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)), "MaliceFake");
+        net.minecraftforge.common.util.FakePlayer fake =
+                net.minecraftforge.common.util.FakePlayerFactory.get(arena, profile);
+        TrialManager manager = TrialManager.get(server);
+
+        DefenseDefinition base = DefenseLibrary.first();
+        if (base == null)
+        {
+            failures.add("defenses/ 是空的，守塔那条生成点没内容可开，接线台账没跑");
+            return;
+        }
+        // 拿一份副本改第 1 波：第一只写 malice_level=7（顶掉阶梯），第二只清空（跟着阶梯）
+        DefenseDefinition probe = base.copy();
+        List<TrialDefinition.MobEntry> waveMobs = probe.waves.get(0).mobs;
+        waveMobs.get(0).maliceLevel = 7;
+        int overridden = Math.max(1, waveMobs.get(0).count);
+        if (waveMobs.size() > 1)
+        {
+            waveMobs.get(1).maliceLevel = null;
+        }
+        int expected = 0;
+        for (TrialDefinition.MobEntry entry : waveMobs)
+        {
+            expected += Math.max(1, entry.count);
+        }
+
+        MaliceLink.resetTelemetry();
+        long before = MaliceLink.requestCount();
+        if (!ArenaService.beginDefense(fake, probe))
+        {
+            failures.add("守塔这一场开不起来，恶意接线的运行期证据整条没跑");
+            return;
+        }
+        try
+        {
+            TrialSession session = manager.sessionOf(profile.getId());
+            check(failures, session != null && session.mode == TrialMode.DEFENSE,
+                    "开了守塔却查不到 DEFENSE 会话，后面的台账无从对齐");
+            int requested = (int) (MaliceLink.requestCount() - before);
+            check(failures, requested == expected,
+                    "守塔第 1 波该报 " + expected + " 次落笔请求，实际报了 " + requested
+                            + " 次——差的那几只是生成点漏接线");
+            check(failures, session != null && session.aliveMobs.size() == expected,
+                    "台账报了 " + requested + " 次，场上却记着 " + (session == null ? -1 : session.aliveMobs.size())
+                            + " 只——报数与记账不是同一批怪");
+            List<MaliceLink.Request> seen = MaliceLink.recentRequests(64);
+            int wrongStage = 0;
+            int overriddenSeen = 0;
+            int ladderSeen = 0;
+            for (MaliceLink.Request request : seen)
+            {
+                if (request.stageIndex() != 0)
+                {
+                    wrongStage++;
+                }
+                if (request.overridden())
+                {
+                    overriddenSeen++;
+                    if (request.level() != 7)
+                    {
+                        wrongStage++; // 覆盖值没落到等级上，等于 malice_level 白写
+                    }
+                }
+                else
+                {
+                    ladderSeen++;
+                }
+            }
+            check(failures, wrongStage == 0,
+                    "守塔第 1 波有 " + wrongStage + " 次请求的阶梯序号或覆盖等级不对（第 1 波该是 0 级阶梯，"
+                            + "写了 malice_level:7 的那只该报 7）");
+            check(failures, overriddenSeen == overridden,
+                    "malice_level 覆盖的那只该报 " + overridden + " 次，实际 " + overriddenSeen
+                            + " 次——单只怪的字段没被生成点读走");
+            check(failures, ladderSeen == expected - overridden,
+                    "跟着阶梯的那几只该报 " + (expected - overridden) + " 次，实际 " + ladderSeen + " 次");
+            // 没装恶意时队列必须空：报过数不等于排了队
+            check(failures, MaliceLink.modPresent() || MaliceLink.pendingCount() == 0,
+                    "恶意不在场却有怪排在落笔队列里——那些永远等不到，还会占着实体引用");
+        }
+        finally
+        {
+            settle(manager, fake, failures, "守塔");
+        }
+
+        // ② 副本：难度档才是序号来源（easy/normal/hard = 0/1/2），波次不参与
+        ChallengeDefinition challenge = ChallengeLibrary.ordered().isEmpty()
+                ? null : ChallengeLibrary.ordered().get(0);
+        if (challenge == null)
+        {
+            failures.add("challenges/ 是空的，副本那条生成点没内容可开");
+        }
+        else
+        {
+            MaliceLink.resetTelemetry();
+            if (!ArenaService.beginDungeon(fake, challenge, "hard"))
+            {
+                failures.add("副本这一场开不起来，档位序号的运行期证据没跑");
+            }
+            else
+            {
+                try
+                {
+                    TrialSession dungeon = manager.sessionOf(profile.getId());
+                    int spawned = dungeon == null ? 0 : dungeon.aliveMobs.size();
+                    check(failures, spawned > 0, "副本 hard 档一批都没刷出来，档位序号无从核对");
+                    List<MaliceLink.Request> seen = MaliceLink.recentRequests(64);
+                    check(failures, seen.size() == spawned,
+                            "副本刷了 " + spawned + " 只但台账只有 " + seen.size() + " 条");
+                    int offAxis = 0;
+                    for (MaliceLink.Request request : seen)
+                    {
+                        if (request.stageIndex() != 2)
+                        {
+                            offAxis++; // hard 是三档里的第三档 → 序号 2
+                        }
+                    }
+                    check(failures, offAxis == 0,
+                            "hard 档那一批里有 " + offAxis + " 只的阶梯序号不是 2——副本的序号来源应是难度档");
+                }
+                finally
+                {
+                    settle(manager, fake, failures, "副本");
+                }
+            }
+        }
+
+        // ③ 试炼：波次序号来源（spawnOne 那条，爬塔同一条路）
+        TrialDefinition trial = null;
+        for (String id : TrialLibrary.ids())
+        {
+            TrialDefinition candidate = TrialLibrary.get(id);
+            if (candidate != null && candidate.mode == TrialMode.TRIAL && !candidate.waves.isEmpty())
+            {
+                trial = candidate;
+                break;
+            }
+        }
+        if (trial == null)
+        {
+            failures.add("trials/ 里没有可用的 TRIAL 定义，试炼那条生成点没内容可开");
+        }
+        else
+        {
+            MaliceLink.resetTelemetry();
+            if (!ArenaService.beginSession(fake, trial))
+            {
+                failures.add("试炼这一场开不起来，波次序号的运行期证据没跑");
+            }
+            else
+            {
+                try
+                {
+                    TrialSession ward = manager.sessionOf(profile.getId());
+                    int spawned = ward == null ? 0 : ward.aliveMobs.size();
+                    check(failures, spawned > 0, "试炼第 1 波一只都没刷出来，波次序号无从核对");
+                    int wrongWave = 0;
+                    for (MaliceLink.Request request : MaliceLink.recentRequests(64))
+                    {
+                        if (request.stageIndex() != (ward == null ? 0 : ward.waveIndex))
+                        {
+                            wrongWave++;
+                        }
+                    }
+                    check(failures, wrongWave == 0,
+                            "试炼第 1 波里有 " + wrongWave + " 只的阶梯序号与 session.waveIndex 不一致");
+                }
+                finally
+                {
+                    settle(manager, fake, failures, "试炼");
+                }
+            }
+        }
+        MaliceLink.resetTelemetry();
+    }
+
+    /** 结算并拆场：三条生成都用同一个假玩家，上一场不结清下一条就开不了（hasSession 会拒）。 */
+    private static void settle(TrialManager manager, net.minecraft.server.level.ServerPlayer player,
+                               List<String> failures, String label)
+    {
+        try
+        {
+            manager.leave(player);
+        }
+        catch (Exception exception)
+        {
+            failures.add(label + "这一场结算时抛了：" + exception);
+        }
+        check(failures, !manager.hasSession(player.getUUID()),
+                label + "结算之后会话还在——下一场会被 hasSession 拒掉，后面的台账就都不是这一场的了");
+    }
+
+    private static void probeMaliceLink(MinecraftServer server, List<String> failures)
+    {
+        // 阶梯：起点 + 序号 × 步长，两端都夹住
+        check(failures, MaliceLink.levelFor(0, null, 0, 1, 30) == 0, "第 1 波/第 1 层的默认等级是 0");
+        check(failures, MaliceLink.levelFor(7, null, 0, 1, 30) == 7, "每档 +1 时第 8 档该是 7");
+        check(failures, MaliceLink.levelFor(99, null, 10, 2, 30) == 30, "算出 208 必须被封顶到 30");
+        check(failures, MaliceLink.levelFor(3, 12, 0, 1, 30) == 12, "单只怪写了 malice_level 就以它为准");
+        check(failures, MaliceLink.levelFor(3, 999, 0, 1, 30) == 30, "单只怪写的也要封顶");
+        check(failures, MaliceLink.levelFor(3, 0, 5, 1, 30) == 0, "明写 0 = 这一档不带恶意，不能被阶梯顶成 8");
+        check(failures, MaliceLink.levelFor(-4, null, 0, 1, 30) == 0, "负数序号不许算出负等级");
+        check(failures, MaliceLink.levelFor(0, null, -7, 1, 30) == 0, "起点为负时夹到 0");
+        check(failures, MaliceLink.levelFor(Integer.MAX_VALUE, null, 0, Integer.MAX_VALUE, Integer.MAX_VALUE)
+                == MaliceLink.LEVEL_CEILING, "层数×步长溢出必须撞上限，不许翻成负数");
+        check(failures, MaliceLink.levelFor(5, null, 1000, 1, -3) == 0, "上限写反了也不许给出负等级");
+
+        // 阶梯序号的来源：闯关看档位，其余看第几波/第几层
+        check(failures, MaliceLink.stageIndex(TrialMode.CHALLENGE, 9, "easy") == 0, "闯关按档位算，不看波次");
+        check(failures, MaliceLink.stageIndex(TrialMode.CHALLENGE, 9, "normal") == 1, "中档 = 第 2 级");
+        check(failures, MaliceLink.stageIndex(TrialMode.CHALLENGE, 9, "hard") == 2, "高档 = 第 3 级");
+        check(failures, MaliceLink.stageIndex(TrialMode.CHALLENGE, 9, "nightmare") == 0,
+                "认不出的档位退到最低级，不许借别人的序号");
+        check(failures, MaliceLink.stageIndex(TrialMode.TOWER, 41, "hard") == 41, "爬塔用层号，档位不参与");
+        check(failures, MaliceLink.stageIndex(TrialMode.DEFENSE, 6, null) == 6, "守塔用波号");
+        check(failures, MaliceLink.stageIndex(TrialMode.TRIAL, -1, null) == 0, "负波号按第 1 波算");
+
+        // 诊断口必须与判据同源：它说出来的斜率就是 levelFor 算出来的那串
+        List<Integer> sample = MaliceLink.ladderSample(8);
+        check(failures, sample.size() == 8, "阶梯样本该有 8 级，实际 " + sample.size());
+        for (int index = 0; index < sample.size(); index++)
+        {
+            int expected = MaliceLink.levelFor(index, null, TrialConfig.MALICE_BASE_LEVEL.get(),
+                    TrialConfig.MALICE_LEVEL_PER_STAGE.get(), TrialConfig.MALICE_MAX_LEVEL.get());
+            check(failures, sample.get(index) == expected,
+                    "诊断口第 " + (index + 1) + " 级报 " + sample.get(index) + "，判据算的是 " + expected
+                            + "——两个口不一样玩家就会照着假的数去调参");
+        }
+
+        // 没装恶意时整条路必须原样关死：不动等级、不排队列、也不抛
+        net.minecraft.world.entity.Mob zombie = EntityType.ZOMBIE.create(server.overworld());
+        if (zombie == null)
+        {
+            failures.add("造不出僵尸样本，恶意联动的生成点断言没跑");
+        }
+        else
+        {
+            boolean present = MaliceLink.modPresent();
+            check(failures, present || !MaliceLink.active(), "恶意不在场时 active() 必须为假");
+            int before = MaliceLink.pendingCount();
+            check(failures, present || MaliceLink.onSpawn(zombie, 5, null) == -1,
+                    "没装恶意时 onSpawn 必须报 -1（什么都没做）");
+            check(failures, present || MaliceLink.pendingCount() == before,
+                    "没装恶意时不许往队列里塞怪——队列里那只永远等不到落笔");
+            MaliceLink.tick(); // 空队列 / 没联动都必须安静返回，不许抛
+            String text = MaliceLink.diagnose(zombie, null);
+            check(failures, text.contains("在场：" + present),
+                    "诊断口没写清恶意在不在场：" + text);
+            MaliceLink.clearPending();
+            check(failures, MaliceLink.pendingCount() == 0, "clearPending 之后队列必须是空的");
+        }
+
+        // malice_level 是单只怪一级的字段：任何一处逐条 copies 漏了它，开局就把数据里的值丢掉
+        TrialDefinition.MobEntry warded = new TrialDefinition.MobEntry();
+        warded.entity = "minecraft:creeper";
+        warded.count = 2;
+        warded.maliceLevel = 9;
+        TrialDefinition.Wave wardWave = new TrialDefinition.Wave();
+        wardWave.mobs.add(warded);
+        DefenseDefinition withMalice = new DefenseDefinition();
+        withMalice.waves.add(wardWave);
+        DefenseDefinition copied = withMalice.copy();
+        check(failures, Integer.valueOf(9).equals(copied.waves.get(0).mobs.get(0).maliceLevel),
+                "DefenseDefinition.copy() 没带上 malice_level——守塔改的是会话副本，开局这一只的等级就没了");
+        check(failures, copied.waves.get(0).mobs.get(0).maliceLevel != null,
+                "副本里 malice_level 变成 null 会被当成「没写」，跟着阶梯走，等于数据白填");
+
+        // 规则要有牙
+        TrialDefinition.MobEntry negative = new TrialDefinition.MobEntry();
+        negative.entity = "minecraft:zombie";
+        negative.maliceLevel = -1;
+        check(failures, negative.resolve() != null && negative.resolve().contains("malice_level"),
+                "malice_level=-1 没被拒——负等级会让恶意那侧算出反方向的加成");
+        TrialDefinition.MobEntry huge = new TrialDefinition.MobEntry();
+        huge.entity = "minecraft:zombie";
+        huge.maliceLevel = MaliceLink.LEVEL_CEILING + 1;
+        check(failures, huge.resolve() != null, "malice_level 超过 " + MaliceLink.LEVEL_CEILING + " 没被拒");
+        TrialDefinition.MobEntry zero = new TrialDefinition.MobEntry();
+        zero.entity = "minecraft:zombie";
+        zero.maliceLevel = 0;
+        check(failures, zero.resolve() == null, "malice_level=0 是合法写法（明说这一档不带恶意）");
+        TrialDefinition.MobEntry unwritten = new TrialDefinition.MobEntry();
+        unwritten.entity = "minecraft:zombie";
+        check(failures, unwritten.resolve() == null && unwritten.maliceLevel == null,
+                "没写 malice_level 必须是 null 而不是 0——两者分别是「跟着阶梯」与「零级」");
+    }
+
+    /**
      * 拆塔那只怪：分派比例与边界（纯判据）+ goal 真挂上、没走到不扣血、扣血按间隔、
      * 塔归零或怪出了结界就不再啃。
      * <p>
@@ -2403,6 +2816,83 @@ public final class TrialSelfTest
                         + "（一条没有=只能靠创造栏或 /give；多于一条=同一件事两份配方，改哪份都漏一份）");
         check(failures, unsatisfiable.isEmpty(), String.join("；", unsatisfiable)
                 + "（写错的 id 就是这个样子：配方加载得成，却永远摆不出来）");
+    }
+
+    /**
+     * 三种功能终端的「右键契约」。这四条都是 ㊳ 之后才需要钉的：往返门进了生存、会出现在野外，
+     * 以前它既不能合成也不能破坏，这些性质在野外根本没有机会成立。
+     * <p>
+     * 四条判据全部走纯函数／注册表，无头门真跑得动；唯一不能在这儿跑的是「事件真的被 Forge 派过来」，
+     * 那一条仍归真机（docs §3）。
+     */
+    private static void probeTerminalContract(ServerLevel arena, List<String> failures)
+    {
+        net.minecraft.world.level.block.state.BlockState exit =
+                com.trialportal.registry.ModBlocks.ARENA_EXIT.get().defaultBlockState();
+        net.minecraft.world.level.block.state.BlockState door =
+                com.trialportal.registry.ModBlocks.TRIAL_PORTAL.get().defaultBlockState();
+        net.minecraft.world.level.block.state.BlockState pylon =
+                com.trialportal.registry.ModBlocks.WARD_PYLON.get().defaultBlockState();
+        // ① 手持方块点得动：两个开关必须同时设。只设 useItem 的那一半，就是昨天漏掉的野外往返门。
+        List<String> halfSet = new ArrayList<>();
+        for (net.minecraft.world.level.block.state.BlockState ours : List.of(exit, door, pylon))
+        {
+            TrialEvents.RightClickPlan plan = TrialEvents.planFor(ours);
+            if (!plan.denyItem() || !plan.allowBlock())
+            {
+                halfSet.add(net.minecraftforge.registries.ForgeRegistries.BLOCKS.getKey(ours.getBlock()) + " → " + plan);
+            }
+        }
+        check(failures, halfSet.isEmpty(),
+                "这些自家终端的右键计划两个开关没同时设（手持方块点不动 / 潜行右键失灵就是这一条）：" + halfSet);
+        check(failures, TrialEvents.planFor(net.minecraft.world.level.block.Blocks.STONE.defaultBlockState())
+                        == TrialEvents.RightClickPlan.NONE,
+                "石头也被判成自家终端——这条修复会吞掉全场所有方块上的「手里物品一用」");
+        // ② 三种终端的计划必须一模一样：判据只吃方块状态、不吃维度，谁也不许单开一条线
+        check(failures, TrialEvents.planFor(exit) == TrialEvents.planFor(door)
+                        && TrialEvents.planFor(door) == TrialEvents.planFor(pylon),
+                "自家终端里有一个的右键计划和别人不一样——说明有人给某个方块单开了一条特例（昨天漏掉野外那台就是这个形状）");
+        // ③ 能被镐判定为有效工具：1.20.1 的方块标签目录是 tags/blocks（复数），写错目录原版静默不认
+        List<String> unmined = new ArrayList<>();
+        for (net.minecraft.world.level.block.Block block : List.of(
+                com.trialportal.registry.ModBlocks.ARENA_EXIT.get(),
+                com.trialportal.registry.ModBlocks.CHALLENGE_PORTAL.get(),
+                com.trialportal.registry.ModBlocks.TOWER_PORTAL.get(),
+                com.trialportal.registry.ModBlocks.TRIAL_PORTAL.get(),
+                com.trialportal.registry.ModBlocks.WARD_PYLON.get()))
+        {
+            if (!block.defaultBlockState().is(net.minecraft.tags.BlockTags.MINEABLE_WITH_PICKAXE))
+            {
+                unmined.add(String.valueOf(net.minecraftforge.registries.ForgeRegistries.BLOCKS.getKey(block)));
+            }
+        }
+        check(failures, unmined.isEmpty(),
+                "这些方块不在 minecraft:mineable/pickaxe 里，任何工具都算无效工具、效率附魔不生效"
+                        + "（手感像徒手挖基岩）：" + unmined);
+        // ④ 自动机点不动：FakePlayer 走的是同一套 use()，但它不该替真人开局或把自己传走
+        com.mojang.authlib.GameProfile profile = new com.mojang.authlib.GameProfile(
+                java.util.UUID.nameUUIDFromBytes("trial_portal:selftest:fake".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                "SelfTestFake");
+        net.minecraftforge.common.util.FakePlayer fake =
+                net.minecraftforge.common.util.FakePlayerFactory.get(arena, profile);
+        net.minecraft.world.phys.BlockHitResult hit = new net.minecraft.world.phys.BlockHitResult(
+                net.minecraft.world.phys.Vec3.ZERO, net.minecraft.core.Direction.UP, arena.getSharedSpawnPos(), false);
+        net.minecraft.world.InteractionResult onPylon = com.trialportal.registry.ModBlocks.WARD_PYLON.get()
+                .use(pylon, arena, arena.getSharedSpawnPos(), fake, net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+        net.minecraft.world.InteractionResult onExit = com.trialportal.registry.ModBlocks.ARENA_EXIT.get()
+                .use(exit, arena, arena.getSharedSpawnPos(), fake, net.minecraft.world.InteractionHand.MAIN_HAND, hit);
+        check(failures, onPylon == net.minecraft.world.InteractionResult.PASS
+                        && onExit == net.minecraft.world.InteractionResult.PASS,
+                "FakePlayer 右键终端返回了 " + onPylon + " / " + onExit + "——发射器一类自动机就能替真人开局、把人传走");
+        // ⑤ 没有回返记录时那一跳：在场外就整个取消，在场内才兜底送回世界出生点
+        TrialManager.HomePos home = new TrialManager.HomePos(net.minecraft.world.level.Level.OVERWORLD,
+                1.0D, 2.0D, 3.0D, 0.0F, 0.0F);
+        check(failures, ArenaService.skipReturnJump(null, net.minecraft.world.level.Level.OVERWORLD)
+                        && !ArenaService.skipReturnJump(null, ArenaService.ARENA)
+                        && !ArenaService.skipReturnJump(home, net.minecraft.world.level.Level.OVERWORLD)
+                        && !ArenaService.skipReturnJump(home, ArenaService.ARENA),
+                "「没有回返记录」这一跳的四种组合判错了（卡顿时第二跳会把刚到家的人甩去世界出生点，"
+                        + "或反过来把还困在场地里的人丢在原处）");
     }
 
     /**

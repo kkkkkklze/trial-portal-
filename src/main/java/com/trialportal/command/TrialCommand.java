@@ -16,6 +16,7 @@ import com.trialportal.trial.ChallengeLibrary;
 import com.trialportal.trial.DefenseDefinition;
 import com.trialportal.trial.DefenseEdit;
 import com.trialportal.trial.DefenseLibrary;
+import com.trialportal.trial.MaliceLink;
 import com.trialportal.trial.MobCensus;
 import com.trialportal.trial.TrialDefinition;
 import com.trialportal.trial.TrialLibrary;
@@ -30,9 +31,14 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+
+import java.util.List;
 
 /**
  * /tei 指令树（权限等级 2）。调数据包时最顺手的流程：
@@ -102,7 +108,14 @@ public final class TrialCommand
                                                                         .executes(TrialCommand::defenseWaveAddBoss))))))
                         .then(Commands.literal("remove")
                                 .then(Commands.argument("wave", IntegerArgumentType.integer(0))
-                                        .executes(TrialCommand::defenseWaveRemove))))));
+                                        .executes(TrialCommand::defenseWaveRemove)))))
+                .then(Commands.literal("malice")
+                        .then(Commands.literal("status").executes(TrialCommand::maliceStatus))
+                        .then(Commands.literal("probe")
+                                .executes(TrialCommand::maliceProbe)
+                                .then(Commands.argument("level",
+                                        IntegerArgumentType.integer(0, MaliceLink.LEVEL_CEILING))
+                                        .executes(TrialCommand::maliceProbeWrite)))));
     }
     private static int challengeList(CommandContext<CommandSourceStack> context)
     {
@@ -531,5 +544,97 @@ public final class TrialCommand
                         + session.liveDefense.finiteWaveCount() + " 波")
                 .withStyle(ChatFormatting.GREEN), false);
         return 1;
+    }
+
+    // ------------------------------------------------------------------ malice（恶意联动诊断）
+
+    /** 联动是「装了另一个模组才有意义」的功能，所以现场证据必须在整合包里能一次读全。 */
+    private static int maliceStatus(CommandContext<CommandSourceStack> context)
+    {
+        var source = context.getSource();
+        source.sendSuccess(() -> Component.literal(MaliceLink.modPresent()
+                        ? "「恶意」(l2hostility) 在场，联动开着：" + MaliceLink.active()
+                        : "「恶意」(l2hostility) 不在场，本模组不会碰任何恶意等级（这一句是结论，不是报错）")
+                .withStyle(MaliceLink.modPresent() ? ChatFormatting.GREEN : ChatFormatting.GRAY), false);
+        List<Integer> ladder = MaliceLink.ladderSample(8);
+        source.sendSuccess(() -> Component.literal("阶梯前 8 级（第 1 层/第 1 波/最低档起）：" + ladder
+                        + "；差值＝level_per_stage，封顶＝max_level，起点＝base_level")
+                .withStyle(ChatFormatting.GRAY), false);
+        source.sendSuccess(() -> Component.literal("生成点请求过 " + MaliceLink.requestCount() + " 次落笔；最近 "
+                        + Math.min(5, MaliceLink.recentRequests(5).size()) + " 次：" + describeRequests())
+                .withStyle(ChatFormatting.GRAY), false);
+        source.sendSuccess(() -> Component.literal("排队等落笔的怪：" + MaliceLink.pendingCount() + " 只")
+                .withStyle(ChatFormatting.GRAY), false);
+        source.sendSuccess(() -> Component.literal("就近一只怪体检：/tei malice probe　·　试着写一级：/tei malice probe <等级>")
+                .withStyle(ChatFormatting.YELLOW), false);
+        return 1;
+    }
+
+    private static int maliceProbe(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        Mob mob = nearestMob(context);
+        if (mob == null)
+        {
+            context.getSource().sendFailure(Component.literal("附近 32 格内没有生物，站到一只怪旁边再试"));
+            return 0;
+        }
+        return report(context, mob, null);
+    }
+
+    private static int maliceProbeWrite(CommandContext<CommandSourceStack> context) throws CommandSyntaxException
+    {
+        Mob mob = nearestMob(context);
+        if (mob == null)
+        {
+            context.getSource().sendFailure(Component.literal("附近 32 格内没有生物，站到一只怪旁边再试"));
+            return 0;
+        }
+        return report(context, mob, IntegerArgumentType.getInteger(context, "level"));
+    }
+
+    private static int report(CommandContext<CommandSourceStack> context, Mob mob, @Nullable Integer level)
+    {
+        String diagnosis = MaliceLink.diagnose(mob, level);
+        context.getSource().sendSuccess(() -> Component
+                .literal("【恶意联动】" + mob.getName().getString() + " · " + diagnosis)
+                .withStyle(ChatFormatting.GRAY), false);
+        return 1;
+    }
+
+    /** 台账尾巴打印成一句人话：哪一级阶梯算出几级恶意，被单只怪顶掉的要标出来。 */
+    private static String describeRequests()
+    {
+        StringBuilder text = new StringBuilder();
+        for (MaliceLink.Request request : MaliceLink.recentRequests(5))
+        {
+            if (text.length() > 0)
+            {
+                text.append(" · ");
+            }
+            text.append("第").append(request.stageIndex() + 1).append("级→")
+                    .append(request.level()).append(request.overridden() ? "（单只怪写的）" : "");
+        }
+        return text.length() == 0 ? "还没有（生成点一次都没调过——那就是接线没跑）" : text.toString();
+    }
+
+    /** 取指令源附近最近的一只活生物——体检的对象必须是真站在世界里的怪。 */
+    @Nullable
+    private static Mob nearestMob(CommandContext<CommandSourceStack> context)
+    {
+        var source = context.getSource();
+        Vec3 center = source.getPosition();
+        AABB box = new AABB(center, center).inflate(32.0D);
+        Mob best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (Mob mob : source.getLevel().getEntitiesOfClass(Mob.class, box, candidate -> !candidate.isRemoved()))
+        {
+            double distance = mob.position().distanceToSqr(center);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = mob;
+            }
+        }
+        return best;
     }
 }

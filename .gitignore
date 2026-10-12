@@ -30,3 +30,9 @@ verify-logs/
 
 # 本地一次性脚本的字节码
 __pycache__/
+
+# 交接包输出（tools/make-dist.py 的产物，可复现但体积大）
+dist/
+
+# 整合包专用叠加层（本机内容，引用的实体 ID 只在那个整合包里存在；用 tools/census_to_pack.py --overlay 重新生成）
+packOverlays/

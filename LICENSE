@@ -1,0 +1,36 @@
+MIT License
+
+Copyright (c) 2026 kkkkkklze
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Scope note (added by the author of this project, 2026-10-11, so that the grant
+above cannot be read more broadly than intended):
+
+* This license covers the source code of the "Trial Portal" mod written for this
+  project - everything under `src/` (package `com.trialportal`), plus the build
+  scripts, the datapack JSON under `src/main/resources`, and `README.md`.
+* The template files shipped by the ModDevGradle / Forge MDK skeleton keep their
+  own license, which is also MIT; see `TEMPLATE_LICENSE.txt`. That file is not
+  replaced by this one.
+* The three documents under `docs/` whose names end with `（原作者）` are design
+  text written by somebody else and included verbatim. They are **not** covered
+  by the MIT grant above: ask that author before copying or redistributing them.

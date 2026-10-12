@@ -17,7 +17,7 @@ public final class ModCreativeTabs
 
     public static final RegistryObject<CreativeModeTab> MAIN = TABS.register("main", () -> CreativeModeTab.builder()
             .title(Component.translatable("itemGroup.trial_portal.main"))
-            .icon(() -> new ItemStack(ModItems.CHALLENGE_PORTAL.get()))
+            .icon(() -> new ItemStack(ModItems.ARENA_EXIT.get()))
             .displayItems((parameters, output) ->
             {
                 output.accept(new ItemStack(ModItems.ARENA_EXIT.get()));

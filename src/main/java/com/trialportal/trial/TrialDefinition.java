@@ -302,6 +302,14 @@ public class TrialDefinition
         @SerializedName("strength")
         public MobStrength strength;
 
+        /**
+         * 这只怪的恶意等级（装了「恶意」才有效）。用包装类型而不是 int：0 是「明说要零级」，
+         * null 才是「没写、跟着层数/档位算」。写成 int 的话两者分不开，作者填 0 就等于关掉了整个联动。
+         */
+        @SerializedName("malice_level")
+        @Nullable
+        public Integer maliceLevel;
+
         @SerializedName("boss")
         public boolean boss;
 
@@ -331,6 +339,17 @@ public class TrialDefinition
                 {
                     return "mob " + this.entity + " 的 nbt 不是合法 SNBT：" + exception.getMessage();
                 }
+            }
+            if (this.maliceLevel != null && this.maliceLevel < 0)
+            {
+                return "mob " + this.entity + " 的 malice_level 不能为负（当前 " + this.maliceLevel
+                        + "）：要这一档不带恶意就写 0，不想管就别写这个字段";
+            }
+            if (this.maliceLevel != null && this.maliceLevel > MaliceLink.LEVEL_CEILING)
+            {
+                return "mob " + this.entity + " 的 malice_level=" + this.maliceLevel + " 超过 "
+                        + MaliceLink.LEVEL_CEILING
+                        + "，和配置项 malice.max_level 的上限差得太远，多半是把血量写进了这里";
             }
             return this.strength == null ? null : this.strength.resolve("mob " + this.entity + " 的 strength");
         }
@@ -572,6 +591,7 @@ public class TrialDefinition
                 copy.count = authored.count;
                 copy.nbt = authored.nbt;
                 copy.strength = authored.strength;
+                copy.maliceLevel = authored.maliceLevel;
                 copy.boss = authored.boss;
                 if (copy.boss)
                 {

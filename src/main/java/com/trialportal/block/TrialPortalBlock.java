@@ -24,7 +24,7 @@ import org.jetbrains.annotations.Nullable;
  * 传送门方块：三种玩法共用一个类，差别只有构造时传入的 TrialMode。
  * 它不是可穿越的传送门，而是「试炼入口 / 交互终端」——实心方块。
  */
-public class TrialPortalBlock extends BaseEntityBlock implements SneakInteractBlock
+public class TrialPortalBlock extends BaseEntityBlock
 {
     private final TrialMode mode;
 
@@ -62,6 +62,11 @@ public class TrialPortalBlock extends BaseEntityBlock implements SneakInteractBl
         }
         if (hand != InteractionHand.MAIN_HAND || level.getServer() == null)
         {
+            return InteractionResult.PASS;
+        }
+        if (!com.trialportal.trial.TrialEvents.playerInitiated(player))
+        {
+            // 自动机 / FakePlayer 不该替人开局，也不该把人传走
             return InteractionResult.PASS;
         }
         if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer))

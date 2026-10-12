@@ -3,7 +3,10 @@ package com.trialportal.config;
 import net.minecraftforge.common.ForgeConfigSpec;
 
 /**
- * 16 项配置，分 4 组。所有读取都发生在使用时（不是缓存），所以改完保存后新开的会话就用新值。
+ * 29 项配置，分 6 组（challenge / tower / trial / general / arena / malice）。所有读取都发生在使用时
+ * （不是缓存），所以改完保存后新开的会话就用新值。
+ * <p>
+ * 计数由 TrialDataCheck 从源码现算（写死过两次都漂了：24 与 16 都曾是错的）。
  */
 public final class TrialConfig
 {
@@ -38,6 +41,12 @@ public final class TrialConfig
     public static final ForgeConfigSpec.IntValue ARENA_LIGHT_SPACING;
     public static final ForgeConfigSpec.ConfigValue<String> ARENA_PLATFORM_BLOCK;
     public static final ForgeConfigSpec.BooleanValue ARENA_CLEAR_CELL_ON_END;
+
+    public static final ForgeConfigSpec.BooleanValue MALICE_ENABLED;
+    public static final ForgeConfigSpec.IntValue MALICE_BASE_LEVEL;
+    public static final ForgeConfigSpec.IntValue MALICE_LEVEL_PER_STAGE;
+    public static final ForgeConfigSpec.IntValue MALICE_MAX_LEVEL;
+    public static final ForgeConfigSpec.IntValue MALICE_REASSERT_TICKS;
 
     static
     {
@@ -130,6 +139,30 @@ public final class TrialConfig
         ARENA_CLEAR_CELL_ON_END = BUILDER
                 .comment("会话结束时是否拆掉那个隔间的平台（大厅永远保留）")
                 .define("clear_cell_on_end", true);
+        BUILDER.pop();
+
+        BUILDER.push("malice");
+        MALICE_ENABLED = BUILDER
+                .comment("装了「恶意」(l2hostility) 时，本模组是否接管生成怪的恶意等级。"
+                        + "没装那个模组时这一项不起作用；关掉就完全不碰它的等级，"
+                        + "怪继续按它自己那套（维度/生物群系/区块累积）生长")
+                .define("enabled", true);
+        MALICE_BASE_LEVEL = BUILDER
+                .comment("阶梯起点的恶意等级：第 1 层 / 第 1 波 / 最低难度档拿这个值。0 = 起点不带恶意")
+                .defineInRange("base_level", 0, 0, 100000);
+        MALICE_LEVEL_PER_STAGE = BUILDER
+                .comment("每上一层 / 每推进一波 / 每高一档难度加多少恶意等级")
+                .defineInRange("level_per_stage", 1, 0, 100000);
+        MALICE_MAX_LEVEL = BUILDER
+                .comment("恶意等级封顶。本模组的血量已经按层递进，不封顶的话层级再高也读不出来——"
+                        + "整合包里那位能给到上千级。恶意那侧还有它自己的 max_mob_level 与按生物类型的"
+                        + "上限，最终生效的是三方里最小的那个")
+                .defineInRange("max_level", 30, 0, 100000);
+        MALICE_REASSERT_TICKS = BUILDER
+                .comment("生成后最多再观察多少 tick 去落笔。它那侧的等级是怪出生后的第一个 tick 才从区块"
+                        + "难度初始化好的（MobTraitCap#tick），出生瞬间写进去会被 init 覆盖，所以必须等；"
+                        + "超时就没等到（那只怪的生物类型被它排除了），不影响下一只")
+                .defineInRange("reassert_ticks", 40, 1, 1200);
         BUILDER.pop();
 
         SPEC = BUILDER.build();

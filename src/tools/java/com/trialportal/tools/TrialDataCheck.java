@@ -48,10 +48,19 @@ public final class TrialDataCheck
     private int checkedChallenges;
     private int checkedRecipes;
     private int checkedDefenses;
+    /** lang 文件里定义的键数（对账用的分母，随汇总行一起打印） */
+    private int checkedLangKeys;
+    private int checkedLangRefs;
+    /** 配置项与分组：从 TrialConfig.java 现数，注释里那两个数必须与它一致 */
+    private int configItems;
+    private int configGroups;
+    /** TrialManager 里真正把怪放进世界的位置数量，每一处都得接上恶意联动 */
+    private int spawnSites;
 
     public static void main(String[] args) throws IOException
     {
         Path root = Path.of(args.length > 0 ? args[0] : "src/main/resources/data/trial_portal");
+        Path javaRoot = Path.of(args.length > 1 ? args[1] : "src/main/java");
         TrialDataCheck check = new TrialDataCheck();
         Map<String, BossAffix> affixes = check.loadAffixes(root.resolve("boss_affixes"));
         check.checkTrials(root.resolve("trials"), affixes);
@@ -60,10 +69,17 @@ public final class TrialDataCheck
         check.checkDefenses(root.resolve("defenses"));
         check.checkRecipes(root.resolve("recipes"));
         check.checkLootTables(root.resolve("loot_tables/blocks"));
+        // lang 键对账要同时看资源侧（lang 文件）和代码侧（translatable 字面量）
+        check.checkLangKeys(root, javaRoot);
+        // 配置项计数与注释里那句话必须一致；每个生成点都得接上恶意联动
+        check.checkConfigLedger(javaRoot);
+        check.checkSpawnSitesWired(javaRoot);
 
-        System.out.printf(Locale.ROOT, "词条：%d 条；试炼：%d 份；房间：%d 间；副本：%d 份；配方：%d 条；守塔：%d 份%n",
+        System.out.printf(Locale.ROOT,
+                "词条：%d 条；试炼：%d 份；房间：%d 间；副本：%d 份；配方：%d 条；守塔：%d 份；语言键：%d 个定义 / %d 处引用；配置：%d 项 %d 组；生成点：%d 处%n",
                 check.checkedAffixes, check.checkedTrials, check.checkedRooms, check.checkedChallenges,
-                check.checkedRecipes, check.checkedDefenses);
+                check.checkedRecipes, check.checkedDefenses, check.checkedLangKeys, check.checkedLangRefs,
+                check.configItems, check.configGroups, check.spawnSites);
         if (check.problems.isEmpty())
         {
             System.out.println("checkTrialData 通过：没有字段缺失、没有失效引用、逐波逐层都能取到内容");
@@ -287,7 +303,230 @@ public final class TrialDataCheck
 
     /** 原版 1.20.1 合成配方认的值。写错名字原版加载器会静默忽略，所以这里直接红。 */
     private static final Set<String> RECIPE_KEYS = Set.of(
-            "type", "group", "category", "pattern", "key", "ingredients", "result");
+            "type", "group", "category", "pattern", "key", "ingredients", "result", "show_notification");
+
+    /**
+     * lang 键对账：代码里写的每一个 {@code trial_portal} 侧翻译键，必须在两份 lang 文件里都有定义。
+     * <p>
+     * 这条值得单独立门，因为原版的失败形状是<b>把键名本身印到界面上</b>——不抛异常、不进日志，
+     * 只有玩家看得见。本轮就是这样一条：代码取 {@code screen.trial_portal.challenge_picker.empty}
+     * 而 lang 里是 {@code ..._empty}，副本清单为空时屏幕直接显示键名。
+     * 键名是两侧各写一遍的字符串，编译器与运行期都不知道另一侧写了什么，所以只能在这里对账。
+     * <p>
+     * 覆盖面写清楚：只认<b>字面量</b>。用拼接出来的键（{@code translatable(prefix + "." + id)}）这条门看不见，
+     * 那类键要靠运行期判据。键体里允许点，因为 2026-10-11 这轮的漏法正是"多点了一个点"。
+     */
+    private void checkLangKeys(Path dataRoot, Path javaRoot) throws IOException
+    {
+        Path langRoot = dataRoot.getParent().getParent().resolve("assets/trial_portal/lang");
+        if (!Files.isDirectory(langRoot))
+        {
+            // 生成物的复扫是把内容"盖在工程内容之上"再跑一遍，那种暂存目录旁边没有 assets；
+            // 这时退回工程惯例路径（校验任务的 cwd 就是工程根）。两处都没有才算问题——不许静默放过。
+            langRoot = Path.of("src/main/resources/assets/trial_portal/lang");
+        }
+        if (!Files.isDirectory(langRoot))
+        {
+            problems.add("lang：找不到 lang 目录（先试了 " + dataRoot.getParent().getParent()
+                    + "/assets/trial_portal/lang，又试了工程内默认路径）——键名对账根本没跑");
+            return;
+        }
+        Map<String, Set<String>> defined = new java.util.LinkedHashMap<>();
+        for (String locale : List.of("zh_cn", "en_us"))
+        {
+            Path file = langRoot.resolve(locale + ".json");
+            if (!Files.isRegularFile(file))
+            {
+                problems.add("lang：缺 " + file.getFileName() + "（原版会退回 en_us，中文界面就变成键名）");
+                defined.put(locale, Set.of());
+                continue;
+            }
+            JsonElement json;
+            try (Reader reader = Files.newBufferedReader(file))
+            {
+                json = JsonParser.parseReader(reader);
+            }
+            Set<String> keys = new HashSet<>();
+            if (json.isJsonObject())
+            {
+                json.getAsJsonObject().keySet().forEach(keys::add);
+            }
+            defined.put(locale, keys);
+            checkedLangKeys += keys.size();
+        }
+        if (!Files.isDirectory(javaRoot))
+        {
+            problems.add("lang：读不到源码目录 " + javaRoot + "，键名对账根本没跑");
+            return;
+        }
+        List<Path> sources;
+        try (Stream<Path> walk = Files.walk(javaRoot))
+        {
+            sources = walk.filter(p -> p.toString().endsWith(".java")).sorted().toList();
+        }
+        // 键体里允许点：上一版只允许 [A-Za-z0-9_]，于是 challenge_picker.empty 这种"多了个点"的
+        // 写法根本不会被收进引用表——门正是为这一条建的，却因为它不认识点而整个漏掉。
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+                "\"((?:block|item|itemGroup|screen|entity|effect|gui)\\.trial_portal\\.[A-Za-z0-9_.]+)\"");
+        int referenced = 0;
+        for (Path source : sources)
+        {
+            String text = Files.readString(source);
+            java.util.regex.Matcher matcher = pattern.matcher(text);
+            while (matcher.find())
+            {
+                String key = matcher.group(1);
+                referenced++;
+                for (Map.Entry<String, Set<String>> entry : defined.entrySet())
+                {
+                    if (!entry.getValue().contains(key))
+                    {
+                        problems.add("lang：" + source.getFileName() + " 引用了 " + key
+                                + "，但 " + entry.getKey() + ".json 里没有这一项"
+                                + "（原版不报错，只把键名印在屏幕上）");
+                    }
+                }
+            }
+        }
+        checkedLangRefs = referenced;
+        if (referenced == 0)
+        {
+            problems.add("lang：源码里一个翻译键都没扫到（扫了 " + sources.size() + " 个 .java）——"
+                    + "判据空转，多半是正则或源码目录变了");
+        }
+    }
+
+    /**
+     * 配置台账：注释里那两个数（几项几组）必须由源码现数出来。
+     * 这句话漂过两次（24 与 16 都曾是错的），而它正是"改配置的人以为自己知道有几个旋钮"的那种谎。
+     */
+    void checkConfigLedger(Path javaRoot) throws IOException
+    {
+        Path file = javaRoot.resolve("com/trialportal/config/TrialConfig.java");
+        if (!Files.isRegularFile(file))
+        {
+            problems.add("配置台账：找不到 " + file + "，项数对账没跑");
+            return;
+        }
+        int assigned = 0;
+        int defined = 0;
+        int groups = 0;
+        StringBuilder header = new StringBuilder();
+        boolean inHeader = true;
+        for (String line : Files.readAllLines(file, java.nio.charset.StandardCharsets.UTF_8))
+        {
+            String code = line.trim();
+            if (inHeader)
+            {
+                // 只取类声明之前的那段文件头：正文里别处再出现「N 项配置」不算数
+                if (code.startsWith("public final class") || code.startsWith("public class"))
+                {
+                    inHeader = false;
+                }
+                else
+                {
+                    header.append(code).append('\n');
+                }
+            }
+            if (isCommentLine(code))
+            {
+                continue; // 注释里写 "MALICE_ENABLED = BUILDER" 不该被数成一项
+            }
+            if (code.endsWith("= BUILDER"))
+            {
+                assigned++; // 每一项都是「字段 = BUILDER」再换行接 .comment/.define
+            }
+            if (code.contains(".define"))
+            {
+                defined++;
+            }
+            if (code.startsWith("BUILDER.push("))
+            {
+                groups++;
+            }
+        }
+        configItems = assigned;
+        configGroups = groups;
+        if (assigned == 0)
+        {
+            problems.add("配置台账：一项都没数到（数法失效了），注释里那句计数没人对账");
+            return;
+        }
+        if (assigned != defined)
+        {
+            problems.add("配置台账：两种数法不一致——「字段 = BUILDER」数到 " + assigned
+                    + " 项，「.define」数到 " + defined + " 项，多半是某项写法变了");
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(\\d+)\\s*项配置[^0-9]{0,12}(\\d+)\\s*组").matcher(header);
+        if (!matcher.find())
+        {
+            problems.add("配置台账：TrialConfig.java 顶部那句话里没有「N 项配置，分 M 组」，"
+                    + "项数就没人对账（现在是 " + assigned + " 项 / " + groups + " 组）");
+            return;
+        }
+        int claimed = Integer.parseInt(matcher.group(1));
+        int claimedGroups = Integer.parseInt(matcher.group(2));
+        if (claimed != assigned)
+        {
+            problems.add("配置台账：注释说 " + claimed + " 项配置，源码里实际 " + assigned + " 项");
+        }
+        if (claimedGroups != groups)
+        {
+            problems.add("配置台账：注释说分 " + claimedGroups + " 组，源码里实际 " + groups
+                    + " 个 BUILDER.push");
+        }
+    }
+
+    /**
+     * 每个把怪放进世界的位置都必须当场接上恶意联动。判据按<b>语句形状</b>取数
+     * （{@code addFreshEntity(mob)} 之后八行内要有 {@code MaliceLink.onSpawn(}），
+     * 因为注释与 javadoc 里也会出现 addFreshEntity 这个词。
+     */
+    void checkSpawnSitesWired(Path javaRoot) throws IOException
+    {
+        Path file = javaRoot.resolve("com/trialportal/trial/TrialManager.java");
+        if (!Files.isRegularFile(file))
+        {
+            problems.add("生成点对账：找不到 " + file + "，恶意联动接线没人查");
+            return;
+        }
+        List<String> lines = Files.readAllLines(file, java.nio.charset.StandardCharsets.UTF_8);
+        for (int index = 0; index < lines.size(); index++)
+        {
+            String code = lines.get(index).trim();
+            if (isCommentLine(code) || !code.contains("addFreshEntity(mob)"))
+            {
+                continue;
+            }
+            spawnSites++;
+            boolean wired = false;
+            for (int ahead = index; ahead < Math.min(lines.size(), index + 8); ahead++)
+            {
+                String next = lines.get(ahead).trim();
+                if (!isCommentLine(next) && next.startsWith("MaliceLink.onSpawn("))
+                {
+                    wired = true;
+                    break;
+                }
+            }
+            if (!wired)
+            {
+                problems.add("生成点对账：TrialManager.java 第 " + (index + 1) + " 行把怪放进世界，"
+                        + "就近没有 MaliceLink.onSpawn——新增生成点忘了登记恶意等级，"
+                        + "装了恶意的整合包就会在这一处回到 1500 级");
+            }
+        }
+        if (spawnSites == 0)
+        {
+            problems.add("生成点对账：一个生成点都没数到（数法失效了），这条门等于没跑");
+        }
+    }
+
+    private static boolean isCommentLine(String trimmed)
+    {
+        return trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*");
+    }
 
     /**
      * 掉落表按形状判：表是否真注册到方块上由运行期判据管（这里没有注册表）。
@@ -368,6 +607,11 @@ public final class TrialDataCheck
         {
             problems.add(where + "：条目的 name 不是合法 ID（" + item + "）");
             return;
+        }
+        if (!"trial_portal".equals(key.getNamespace()))
+        {
+            problems.add(where + "：条目掉的是 " + item + "，命名空间不是本模组的 trial_portal"
+                    + "（写成 minecraft:arena_exit 这种同名方块时，原版照掉不误，掉的却是别人的东西）");
         }
         if (!key.getPath().equals(fileName))
         {
