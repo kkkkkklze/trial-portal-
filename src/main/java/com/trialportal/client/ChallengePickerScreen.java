@@ -99,7 +99,11 @@ public class ChallengePickerScreen extends Screen
         int left = (this.width - PANEL_WIDTH) / 2;
         int top = (this.height - PANEL_HEIGHT) / 2;
         int listTop = top + 26;
-        this.list = new ChallengeList(this.minecraft, listTop, listTop + 104, row -> select(row.index()));
+        // 视口下沿必须停在摘要行（`top + PANEL_HEIGHT - 46` = top+122）**之上**：
+        // 原先写的是 listTop + 104（= top+130），只有 3 行时列表填不满下面空着，看不出问题；
+        // 关卡一多（装了按整合包普查生成的叠加层之后是 7 行）第 5 行就滚到摘要行底下，两行字叠在一起。
+        // 92 = 4 行整（行高 22），留 6 像素气口给摘要行。
+        this.list = new ChallengeList(this.minecraft, listTop, listTop + 92, row -> select(row.index()));
         this.list.setRenderBackground(false);
         // 列表默认会在自己上下沿各铺一条原版泥土底纹（AbstractSelectionList#renderTopAndBottom），
         // 贴在黑石砖面板上就是"UI 上面多了泥土的贴图"；淡出遮罩留着，它只是渐变不是贴图。
